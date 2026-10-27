@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ArrowLeft, ChevronRight, Database, Loader2 } from "lucide-react";
 import { getPart, sanitizeSku } from "@/lib/parts";
+import { TechnicalDrawings } from "@/components/TechnicalDrawings";
 
 export const Route = createFileRoute("/search")({
   validateSearch: (search: Record<string, unknown>) => ({ part: sanitizeSku(String(search["part"] ?? "")) }),
@@ -20,7 +21,7 @@ export const Route = createFileRoute("/search")({
 
 function Results() {
   const { part } = Route.useSearch();
-  const [tab, setTab] = useState<"analogues" | "apps">("analogues");
+  const [tab, setTab] = useState<"analogues" | "apps" | "drawings">("analogues");
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["part", part],
     queryFn: () => getPart(part),
@@ -44,10 +45,17 @@ function Results() {
             </span>
           )}
         </div>
-        <div className="mt-3 grid grid-cols-2">
-          {([["analogues", "Аналоги"], ["apps", "Применимость"]] as const).map(([key, label]) => (
-            <button key={key} onClick={() => setTab(key)} className={`border-b-2 py-3 text-sm font-medium ${tab === key ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>
-              {label} {data && <span className="text-muted-foreground">({key === "analogues" ? data.analogues.length : data.applicability.length})</span>}
+        <div className="mt-3 grid grid-cols-3">
+          {([
+            ["analogues", "Аналоги"],
+            ["apps", "Применимость"],
+            ["drawings", "Чертежи и размеры"],
+          ] as const).map(([key, label]) => (
+            <button key={key} onClick={() => setTab(key)} className={`border-b-2 px-1 py-3 text-xs font-medium sm:text-sm ${tab === key ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>
+              {label}
+              {data && key === "analogues" && <span className="text-muted-foreground"> ({data.analogues.length})</span>}
+              {data && key === "apps" && <span className="text-muted-foreground"> ({data.applicability.length})</span>}
+              {data && key === "drawings" && <span className="text-muted-foreground"> ({data.technicalDrawings.length + data.specs.length})</span>}
             </button>
           ))}
         </div>
@@ -110,6 +118,7 @@ function Results() {
           </ul>
         ) : <p className="p-8 text-center text-sm text-muted-foreground">Источник не предоставил данные о применимости для этого номера.</p>
       )}
+      {data && tab === "drawings" && <TechnicalDrawings data={data} />}
     </main>
   );
 }
