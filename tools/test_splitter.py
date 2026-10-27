@@ -33,6 +33,31 @@ class TecDocJoinTests(unittest.TestCase):
             self.assertEqual(rows, [("SKU-1", "длина", "1040 мм")])
             db.close()
 
+    def test_crosses_skip_ambiguous_normalized_target_numbers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            # Two printed numbers collapse to the same normalized SKU. The importer
+            # must not guess which target supplier/article was intended.
+            (folder / "articles.csv").write_text(
+                "100\\tSRC-100\\t10\\t1\\tSource part\\n"
+                "200\\tAB-12\\t20\\t1\\tTarget A\\n"
+                "201\\tAB12\\t20\\t1\\tTarget B\\n",
+                encoding="utf-8",
+            )
+            (folder / "article_cross_list.csv").write_text(
+                "100\\t20\\tAB/12\\n",
+                encoding="utf-8",
+            )
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            splitter.load_crosses(
+                db, folder, {"100": "SRC100", "200": "AB12", "201": "AB12"}
+            )
+            self.assertEqual(
+                db.execute("SELECT COUNT(*) FROM analogues").fetchone()[0], 0
+            )
+            db.close()
+
     def test_media_metadata_is_not_mistaken_for_part_link(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
