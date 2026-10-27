@@ -4,6 +4,7 @@ import { useState } from "react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { ArrowLeft, Loader2, Share2, ZoomIn, ZoomOut, Maximize, X } from "lucide-react";
 import { getPart, sanitizeSku, type Hotspot, type PartData } from "@/lib/parts";
+import { TechnicalDrawings } from "@/components/TechnicalDrawings";
 
 export const Route = createFileRoute("/diagram")({
   validateSearch: (s: Record<string, unknown>) => ({ part: sanitizeSku(String(s["part"] ?? "")), car: String(s["car"] ?? "") }),
@@ -24,7 +25,7 @@ function Diagram() {
   const { data, isLoading, isError, error } = useQuery({ queryKey: ["part", part], queryFn: () => getPart(part), enabled: !!part, staleTime: Infinity });
   const [active, setActive] = useState<Hotspot | null>(null);
   const [copied, setCopied] = useState(false);
-  const [tab, setTab] = useState<"diagram" | "specs">("diagram");
+  const [tab, setTab] = useState<"diagram" | "specs" | "drawings">("diagram");
   const vehicle = data?.applicability.find((v) => v.id === car);
 
   async function share() {
@@ -61,13 +62,17 @@ function Diagram() {
           <Share2 className="h-4 w-4" /> {copied ? "Скопировано" : "Поделиться"}
         </button>
       </header>
-      <div className="grid grid-cols-2 border-b">
-        {([["diagram", "Взрыв-схема"], ["specs", "Технические характеристики"]] as const).map(([k, l]) => (
-          <button key={k} onClick={() => setTab(k)} className={`border-b-2 px-2 py-3 text-xs font-medium sm:text-sm ${tab === k ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>{l}</button>
+      <div className="grid grid-cols-3 border-b">
+        {([
+          ["diagram", "Взрыв-схема"],
+          ["specs", "Характеристики"],
+          ["drawings", "Чертежи и размеры"],
+        ] as const).map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} className={`border-b-2 px-1 py-3 text-[11px] font-medium sm:text-sm ${tab === k ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>{l}</button>
         ))}
       </div>
 
-      {tab === "specs" ? <SpecsTable data={data} /> : !imageUrl ? (
+      {tab === "specs" ? <SpecsTable data={data} /> : tab === "drawings" ? <TechnicalDrawings data={data} /> : !imageUrl ? (
         <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">Каталог не вернул схему для этой детали</div>
       ) : (
         <div className="relative flex-1 overflow-hidden bg-blueprint-paper" style={{ touchAction: "none" }}>
