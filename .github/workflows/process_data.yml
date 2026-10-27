@@ -69,12 +69,12 @@ jobs:
             exit 1
           fi
 
-          find "$EXTRACT_DIR" -type f \\( \
+          find "$EXTRACT_DIR" -type f \( \
             -iname 'parts.csv' -o -iname 'parts.csv.*' -o \
             -iname 'analogs.csv' -o -iname 'analogs.csv.*' -o \
             -iname 'compatibility.csv' -o -iname 'compatibility.csv.*' -o \
             -iname 'specifications.csv' -o -iname 'specifications.csv.*' -o \
-            -iname 'diagrams.csv' -o -iname 'diagrams.csv.*' \\) -print0 |
+            -iname 'diagrams.csv' -o -iname 'diagrams.csv.*' \) -print0 |
           while IFS= read -r -d '' file; do
             cp "$file" "$CSV_DIR/$(basename "$file")"
           done
@@ -138,3 +138,7 @@ jobs:
 
           git commit -m "Update generated parts data shards"
           git push origin HEAD:main
+
+          # Pushes authenticated with GITHUB_TOKEN do not automatically start
+          # other workflows, so dispatch the Pages deployment explicitly.
+          gh workflow run deploy.yml --ref main
