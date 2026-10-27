@@ -75,7 +75,12 @@ jobs:
             -iname 'analogs.csv' -o -iname 'analogs.csv.*' -o \
             -iname 'compatibility.csv' -o -iname 'compatibility.csv.*' -o \
             -iname 'specifications.csv' -o -iname 'specifications.csv.*' -o \
-            -iname 'diagrams.csv' -o -iname 'diagrams.csv.*' \) -print0 |
+            -iname 'article_criteria.csv' -o -iname 'article_criteria.csv.*' -o \
+            -iname 'criteria.csv' -o -iname 'criteria.csv.*' -o \
+            -iname 'diagrams.csv' -o -iname 'diagrams.csv.*' -o \
+            -iname 'graphics.csv' -o -iname 'graphics.csv.*' -o \
+            -iname 'article_graphics.csv' -o -iname 'article_graphics.csv.*' -o \
+            -iname 'article_images.csv' -o -iname 'article_images.csv.*' \) -print0 |
           while IFS= read -r -d '' file; do
             cp "$file" "$CSV_DIR/$(basename "$file")"
           done
