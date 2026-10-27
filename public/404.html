@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="ru">
+  <head><meta charset="utf-8"><title>PartScope</title></head>
+  <body>
+    <script>
+      sessionStorage.setItem("partscope-redirect", location.pathname + location.search + location.hash);
+      location.replace("/partscope/");
+    </script>
+  </body>
+</html>
