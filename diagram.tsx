@@ -21,7 +21,7 @@ export const Route = createFileRoute("/diagram")({
 
 function Diagram() {
   const { part, car } = Route.useSearch();
-  const { data } = useQuery({ queryKey: ["part", part], queryFn: () => getPart(part), staleTime: Infinity });
+  const { data, isLoading, isError, error } = useQuery({ queryKey: ["part", part], queryFn: () => getPart(part), enabled: !!part, staleTime: Infinity });
   const [active, setActive] = useState<Hotspot | null>(null);
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<"diagram" | "specs">("diagram");
@@ -39,7 +39,8 @@ function Diagram() {
     }
   }
 
-  if (!data) return <div className="flex min-h-dvh items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>;
+  if (isLoading) return <main className="flex min-h-dvh flex-col items-center justify-center gap-4 p-6" role="status"><Loader2 className="h-7 w-7 animate-spin text-primary" /><p className="text-sm text-muted-foreground">Загрузка данных детали и схемы…</p><div className="w-full max-w-md space-y-3"><div className="h-24 animate-pulse rounded-xl bg-muted" /><div className="h-48 animate-pulse rounded-xl bg-muted" /></div></main>;
+  if (isError || !data) return <main className="flex min-h-dvh flex-col items-center justify-center gap-3 p-6 text-center" role="alert"><p className="font-semibold">Данные детали недоступны</p><p className="max-w-md text-sm text-muted-foreground">{error instanceof Error ? error.message : part ? "Источник не вернул данные для этого номера." : "Вернитесь на главный экран и введите номер детали."}</p><Link to="/" className="mt-2 rounded-xl border px-4 py-2 text-sm">Вернуться к поиску</Link></main>;
   const { width, height, hotspots, imageUrl } = data.diagram;
 
   return (
