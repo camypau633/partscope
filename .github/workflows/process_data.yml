@@ -155,48 +155,16 @@ jobs:
           python -m py_compile tools/splitter.py
           echo "Selected TecDoc tables are ready."
 
-      - name: Generate JSON shards
+      - name: Inspect real TecDoc table layout
         run: |
           set -euo pipefail
-          python tools/splitter.py --input raw_data --output public/data --clean-output
+          python tools/splitter.py --input raw_data --inspect-layout | tee tecdoc-layout-report.txt
+          test -s tecdoc-layout-report.txt
 
-      - name: Validate generated shards
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          shards=(public/data/*.json)
-          if [ "${#shards[@]}" -eq 0 ]; then
-            echo "::error::No JSON shards were generated."
-            exit 1
-          fi
-          total_bytes=0
-          for shard in "${shards[@]}"; do
-            bytes=$(stat -c '%s' "$shard")
-            total_bytes=$((total_bytes + bytes))
-            if [ "$bytes" -ge 90000000 ]; then
-              echo "::error::$(basename "$shard") is at least 90 MB."
-              exit 1
-            fi
-          done
-          echo "Shard count: ${#shards[@]}"
-          echo "Total shard bytes: $total_bytes"
-          if [ "$total_bytes" -ge 800000000 ]; then
-            echo "::error::Generated catalogue is at least 800 MB; refusing to push it."
-            exit 1
-          fi
-
-      - name: Commit generated shards
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A public/data
-          if git diff --cached --quiet; then
-            echo "Generated data is unchanged; nothing to commit."
-            exit 0
-          fi
-          git commit -m "Import TecDoc catalogue shards"
-          git push origin HEAD:main
-          gh workflow run deploy.yml --ref main
+      - name: Upload TecDoc layout report
+        uses: actions/upload-artifact@v4
+        with:
+          name: tecdoc-layout-report
+          path: tecdoc-layout-report.txt
+          if-no-files-found: error
+          retention-days: 7
