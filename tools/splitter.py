@@ -319,45 +319,63 @@ def load_drawings(db, folder, article_to_sku, image_paths):
 
 
 def load_crosses(db, folder, sku_by_article):
-    """Import only cross rows whose two endpoint IDs resolve to known article IDs."""
+    """Resolve cross-list rows as source article ID + target supplier ID + target article number."""
     path = folder / "article_cross_list.csv"
+    articles_path = folder / "articles.csv"
     if not path.exists():
         print("[INFO] article_cross_list.csv not present; analogues remain empty")
         return 0
+    if not articles_path.exists():
+        print("[WARN] articles.csv missing; cross references cannot be resolved safely")
+        return 0
 
-    known = set(sku_by_article)
-    total = left_match = right_match = both_match = imported = 0
+    # The source table's observed three-column layout is:
+    # source article ID, target supplier ID, target supplier article number.
+    # The second column is NOT a target article ID. Resolve it with the
+    # compound key (supplier ID, normalized article number) from articles.csv.
+    target_by_supplier_number = {}
+    for article in read_tsv(articles_path):
+        if len(article) < 3:
+            continue
+        article_id, number, supplier_id = article[0].strip(), article[1].strip(), article[2].strip()
+        target_sku = sku_by_article.get(article_id, clean_sku(number))
+        normalized_number = clean_sku(number)
+        if supplier_id and normalized_number and target_sku:
+            target_by_supplier_number.setdefault((supplier_id, normalized_number), target_sku)
+
+    total = source_match = target_match = both_match = imported = 0
     unmatched_samples = []
     batch = []
     for row in read_tsv(path):
-        if len(row) < 2:
+        if len(row) < 3:
             continue
         total += 1
-        source_id, target_id = row[0].strip(), row[1].strip()
-        left_ok, right_ok = source_id in known, target_id in known
-        left_match += int(left_ok)
-        right_match += int(right_ok)
-        if left_ok and right_ok:
+        source_id, target_supplier_id, target_number = row[0].strip(), row[1].strip(), row[2].strip()
+        source_sku = sku_by_article.get(source_id, "")
+        target_sku = target_by_supplier_number.get((target_supplier_id, clean_sku(target_number)), "")
+        source_ok, target_ok = bool(source_sku), bool(target_sku)
+        source_match += int(source_ok)
+        target_match += int(target_ok)
+        if source_ok and target_ok:
             both_match += 1
-            source_sku, target_sku = sku_by_article[source_id], sku_by_article[target_id]
-            if source_sku and target_sku and source_sku != target_sku:
+            if source_sku != target_sku:
                 batch.extend(((source_sku, target_sku), (target_sku, source_sku)))
                 if len(batch) >= 5000:
                     db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
                     imported += len(batch)
                     batch = []
         elif len(unmatched_samples) < 8:
-            unmatched_samples.append([source_id, target_id, row[2] if len(row) > 2 else ""])
+            unmatched_samples.append([source_id, target_supplier_id, target_number])
     if batch:
         db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
         imported += len(batch)
     db.commit()
-    print("[CROSS-AUDIT] rows: {:,}; source IDs matched: {:,}; target IDs matched: {:,}; both matched: {:,}".format(
-        total, left_match, right_match, both_match
+    print("[CROSS-AUDIT] rows: {:,}; source articles matched: {:,}; target supplier+number matched: {:,}; both matched: {:,}".format(
+        total, source_match, target_match, both_match
     ))
     if unmatched_samples:
-        print("[CROSS-AUDIT] unmatched examples: {}".format(json.dumps(unmatched_samples, ensure_ascii=False)))
-    print("[INFO] Verified article-ID cross references imported: {:,}".format(imported))
+        print("[CROSS-AUDIT] unresolved examples: {}".format(json.dumps(unmatched_samples, ensure_ascii=False)))
+    print("[INFO] Resolved cross-reference links imported: {:,}".format(imported))
     return imported
 
 def import_normalized(db, input_dir):
