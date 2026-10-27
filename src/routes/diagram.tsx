@@ -46,7 +46,7 @@ function Diagram() {
   const popupHeight = 178;
   const popupX = active ? Math.max(12, Math.min(active.x - popupWidth / 2, width - popupWidth - 12)) : 0;
   const popupY = active ? (active.y > popupHeight + 24 ? active.y - popupHeight - 24 : Math.min(height - popupHeight - 12, active.y + 24)) : 0;
-  const visibleSpecs = data.specs.slice(0, 3);
+  const visibleSpecs = (active?.specs?.length ? active.specs : active?.oem === data.sku ? data.specs : []).slice(0, 3);
 
   return (
     <main className="flex h-dvh flex-col">
@@ -102,7 +102,7 @@ function Diagram() {
                                 <span className="text-white/70">{spec.label}</span>
                                 <span className="shrink-0 font-mono font-semibold text-white">{spec.value}{spec.unit ? ` ${spec.unit}` : ""}</span>
                               </div>
-                            )) : <div className="text-xs text-white/70">Размеры для этой позиции не найдены</div>}
+                            )) : <div className="text-xs text-white/70">Размеры этой позиции не переданы источником данных</div>}
                           </div>
                           <div className="mt-1 truncate text-[10px] text-white/45">Нажмите на другую точку, чтобы посмотреть характеристики</div>
                         </div>
