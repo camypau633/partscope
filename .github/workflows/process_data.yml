@@ -1,11 +1,12 @@
-name: Prepare TecDoc source CSVs (stage 1)
+name: Process TecDoc parts data
 
 on:
   workflow_dispatch:
   workflow_call:
 
 permissions:
-  contents: read
+  contents: write
+  actions: write
 
 concurrency:
   group: process-parts-data
@@ -27,13 +28,13 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Check available runner storage
+      - name: Check runner storage
         run: |
           set -euo pipefail
-          df -h "$RUNNER_TEMP"
+          df -h .
           mkdir -p raw_data/2Q2018 raw_data/1Q2019
 
-      - name: Download only required CSV files and image-path metadata
+      - name: Download selected CSV tables and image-path manifest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -41,7 +42,7 @@ jobs:
           python - <<'PY'
           import json
           import os
-          import subprocess
+          import shutil
           import urllib.request
           from pathlib import Path
 
@@ -50,26 +51,24 @@ jobs:
                   "repo": "tecdocSQL/tecdocdatabase2Q2018",
                   "tables": (
                       "articles.csv", "suppliers.csv", "article_attributes.csv",
-                      "article_cross_list.csv", "article_oe_numbers.csv",
-                      "article_informations.csv", "manufacturers.csv", "models.csv",
-                      "passengercars.csv", "passengercars_link_engines.csv", "engines.csv",
+                      "article_informations.csv", "article_cross_list.csv",
                   ),
               },
               "1Q2019": {
                   "repo": "tecdocSQL/tecdocdatabase1Q2019",
-                  "tables": (
-                      "articles.csv", "suppliers.csv", "article_mediainformation.csv",
-                  ),
+                  "tables": ("articles.csv", "suppliers.csv", "article_mediainformation.csv"),
               },
           }
 
           def fetch(url, destination):
               request = urllib.request.Request(
                   url,
-                  headers={"User-Agent": "PartScope-data-import",
-                           "Authorization": "Bearer " + os.environ.get("GH_TOKEN", "")},
+                  headers={
+                      "User-Agent": "PartScope-data-import",
+                      "Authorization": "Bearer " + os.environ.get("GH_TOKEN", ""),
+                  },
               )
-              with urllib.request.urlopen(request, timeout=60) as response, open(destination, "wb") as out:
+              with urllib.request.urlopen(request, timeout=90) as response, open(destination, "wb") as out:
                   while True:
                       block = response.read(1024 * 1024)
                       if not block:
@@ -80,96 +79,124 @@ jobs:
               repo = config["repo"]
               outdir = Path("raw_data") / label
               outdir.mkdir(parents=True, exist_ok=True)
-              tree_url = "https://api.github.com/repos/" + repo + "/git/trees/main?recursive=1"
               tree_file = outdir / "tree.json"
-              fetch(tree_url, tree_file)
+              fetch("https://api.github.com/repos/" + repo + "/git/trees/main?recursive=1", tree_file)
               tree = json.loads(tree_file.read_text(encoding="utf-8"))
               if tree.get("truncated"):
-                  raise SystemExit("GitHub tree response was truncated for " + repo)
+                  raise SystemExit("GitHub returned a truncated tree for " + repo)
               entries = {
-                  entry["path"]: entry
-                  for entry in tree.get("tree", [])
-                  if entry.get("type") == "blob"
+                  item["path"]: item for item in tree.get("tree", [])
+                  if item.get("type") == "blob"
               }
               paths = list(entries)
 
-              # Preflight selected CSV sizes before downloading; keep a safety margin.
-              selected_paths = set()
+              selected = set()
               for table in config["tables"]:
-                  selected_paths.update(
-                      path for path in paths
-                      if path == table or path.startswith(table + ".")
-                  )
-              selected_bytes = sum(int(entries[path].get("size", 0)) for path in selected_paths)
-              free_bytes = __import__("shutil").disk_usage(".").free
-              safety_margin = 2 * 1024**3
-              if selected_bytes > 10 * 1024**3 or selected_bytes > free_bytes - safety_margin:
+                  selected.update(p for p in paths if p == table or p.startswith(table + "."))
+              payload = sum(int(entries[p].get("size", 0)) for p in selected)
+              free = shutil.disk_usage(".").free
+              # Chunk assembly briefly needs source parts and the merged file.
+              if payload > 9 * 1024**3 or payload * 1.6 > free - 2 * 1024**3:
                   raise SystemExit(
-                      "Selected CSVs for " + repo + " need about "
-                      + str(round(selected_bytes / 1024**3, 2)) + " GiB; "
-                      "refusing to download with this runner disk limit."
+                      "Refusing download: selected tables for " + repo + " are about "
+                      + str(round(payload / 1024**3, 2)) + " GiB and exceed the safe runner budget."
                   )
-              print("Selected CSV payload:", round(selected_bytes / 1024**3, 2), "GiB")
+              print("Selected CSV size for", repo, ":", round(payload / 1024**3, 2), "GiB")
 
-              # This is only a text manifest of existing image paths; no image bytes are downloaded.
               if label == "1Q2019":
-                  image_paths = sorted(path for path in paths if path.startswith("images/"))
+                  image_paths = sorted(p for p in paths if p.startswith("images/"))
                   (outdir / "images_manifest.txt").write_text(
                       "\n".join(image_paths) + ("\n" if image_paths else ""), encoding="utf-8"
                   )
-                  print("Image paths indexed:", len(image_paths))
+                  print("Indexed image paths without downloading images:", len(image_paths))
 
               for table in config["tables"]:
                   matching = [p for p in paths if p == table or p.startswith(table + ".")]
                   if not matching:
-                      print("Optional table absent:", repo + "/" + table)
+                      print("Table not present in source; skipped:", repo + "/" + table)
                       continue
                   matching.sort(key=lambda p: (0, int(p.rsplit(".", 1)[1]))
                                 if p.rsplit(".", 1)[-1].isdigit() else (1, 0))
                   for path in matching:
-                      dest = outdir / Path(path).name
-                      if dest.exists() and dest.stat().st_size:
+                      destination = outdir / Path(path).name
+                      if destination.exists() and destination.stat().st_size:
                           continue
-                      url = "https://raw.githubusercontent.com/" + repo + "/main/" + path
                       print("Downloading", repo + "/" + path)
-                      fetch(url, dest)
+                      fetch("https://raw.githubusercontent.com/" + repo + "/main/" + path, destination)
 
-                  # Concatenate only split parts, in numeric order, then remove the parts.
                   chunks = [outdir / Path(p).name for p in matching
                             if Path(p).name.startswith(table + ".")]
                   if chunks:
-                      combined = outdir / table
-                      with combined.open("wb") as target:
+                      merged = outdir / table
+                      with merged.open("wb") as target:
                           for chunk in chunks:
                               with chunk.open("rb") as source:
-                                  while True:
-                                      block = source.read(1024 * 1024)
-                                      if not block:
-                                          break
-                                      target.write(block)
+                                  shutil.copyfileobj(source, target, 1024 * 1024)
                       for chunk in chunks:
                           chunk.unlink()
-                      print("Combined", table, "from", len(chunks), "parts")
+                      print("Merged", table, "from", len(chunks), "numbered chunks")
 
               tree_file.unlink(missing_ok=True)
           PY
 
-      - name: Validate downloaded source tables (stage 1 only)
+      - name: Validate source files and Python syntax
         run: |
           set -euo pipefail
           test -s raw_data/2Q2018/articles.csv
-          test -s raw_data/2Q2018/article_attributes.csv
           test -s raw_data/2Q2018/suppliers.csv
+          test -s raw_data/2Q2018/article_attributes.csv
           test -s raw_data/1Q2019/articles.csv
           test -s raw_data/1Q2019/article_mediainformation.csv
-
+          test -s raw_data/1Q2019/images_manifest.txt
           if find raw_data -type f -regextype posix-extended -regex '.*\.csv\.[0-9]{3}' | grep -q .; then
-            echo "::error::Split CSV chunks remain after assembly."
+            echo "::error::Numbered CSV chunks remain after merge."
+            exit 1
+          fi
+          python -m py_compile tools/splitter.py
+          echo "Selected TecDoc tables are ready."
+
+      - name: Generate JSON shards
+        run: |
+          set -euo pipefail
+          python tools/splitter.py --input raw_data --output public/data --clean-output
+
+      - name: Validate generated shards
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          shards=(public/data/*.json)
+          if [ "${#shards[@]}" -eq 0 ]; then
+            echo "::error::No JSON shards were generated."
+            exit 1
+          fi
+          total_bytes=0
+          for shard in "${shards[@]}"; do
+            bytes=$(stat -c '%s' "$shard")
+            total_bytes=$((total_bytes + bytes))
+            if [ "$bytes" -ge 90000000 ]; then
+              echo "::error::$(basename "$shard") is at least 90 MB."
+              exit 1
+            fi
+          done
+          echo "Shard count: ${#shards[@]}"
+          echo "Total shard bytes: $total_bytes"
+          if [ "$total_bytes" -ge 800000000 ]; then
+            echo "::error::Generated catalogue is at least 800 MB; refusing to push it."
             exit 1
           fi
 
-          echo "Downloaded and assembled CSV tables:"
-          find raw_data -type f -name '*.csv' -printf '%p (%s bytes)\n' | sort
-          echo "Image-path manifest:"
-          wc -l raw_data/1Q2019/images_manifest.txt
-          echo "Stage 1 complete. The splitter is intentionally not run until its real TecDoc joins are implemented and tested."
+      - name: Commit generated shards
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A public/data
+          if git diff --cached --quiet; then
+            echo "Generated data is unchanged; nothing to commit."
+            exit 0
+          fi
+          git commit -m "Import TecDoc catalogue shards"
+          git push origin HEAD:main
+          gh workflow run deploy.yml --ref main
