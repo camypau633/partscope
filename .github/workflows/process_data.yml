@@ -162,6 +162,57 @@ jobs:
           python tools/splitter.py --input raw_data --inspect-layout | tee tecdoc-layout-report.txt
           test -s tecdoc-layout-report.txt
 
+      - name: Build and validate a 1,000-part catalogue sample
+        run: |
+          set -euo pipefail
+          python tools/splitter.py --input raw_data --output build-smoke/catalogue --limit 1000 --clean-output | tee catalogue-smoke-build.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("build-smoke/catalogue")
+          files = sorted(root.glob("*.json"))
+          if not files:
+              raise SystemExit("Smoke build produced no JSON shard files.")
+
+          total = 0
+          required = {"sku", "brand", "name", "specs", "technical_drawings", "analogues", "compatibility"}
+          for path in files:
+              data = json.loads(path.read_text(encoding="utf-8"))
+              if not isinstance(data, dict) or not data:
+                  raise SystemExit("Empty or invalid JSON shard: " + str(path))
+              for key, record in data.items():
+                  if not isinstance(record, dict) or not required.issubset(record):
+                      raise SystemExit("Invalid part record in " + str(path) + ": " + key)
+                  if record.get("sku") != key or not key:
+                      raise SystemExit("SKU key mismatch in " + str(path) + ": " + key)
+                  total += 1
+
+          if total < 1000:
+              raise SystemExit("Expected at least 1,000 records, got " + str(total))
+
+          summary = [
+              "status=success",
+              "records=" + str(total),
+              "json_shards=" + str(len(files)),
+              "required_fields=" + ",".join(sorted(required)),
+              "drawings_and_compatibility_are_not_claimed_verified_by_this_smoke_test",
+          ]
+          Path("catalogue-smoke-summary.txt").write_text("\\n".join(summary) + "\\n", encoding="utf-8")
+          print("\\n".join(summary))
+          PY
+
+      - name: Upload catalogue smoke-test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: partscope-catalogue-smoke-test
+          path: |
+            build-smoke/catalogue/*.json
+            catalogue-smoke-build.log
+            catalogue-smoke-summary.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload TecDoc layout report
         uses: actions/upload-artifact@v4
         with:
