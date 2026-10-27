@@ -26,53 +26,90 @@ export type PartData = {
   fetchedAt: number;
 };
 
-/** Normalize an entered part number without inventing any replacement values. */
 export function sanitizeSku(input: string): string {
   return input.replace(/[^0-9a-zA-Zа-яА-ЯёЁ]/g, "").toUpperCase();
 }
 
 /**
- * Data-source adapter pool. Each endpoint must accept GET ?sku=... and return
- * the JSON contract consumed by normalizeRemote(). Replace or extend endpoints
- * here without coupling UI components to a particular catalogue provider.
+ * Configure VITE_PARTS_DATABASE_RAW_BASE to the directory containing per-part
+ * JSON files, e.g. https://raw.githubusercontent.com/OWNER/REPOSITORY/main/parts
+ * A file for SKU ABC123 is then requested from .../parts/ABC123.json.
+ *
+ * Optional VITE_PARTS_DATABASE_RAW_FALLBACKS can contain comma-separated
+ * additional raw directory URLs. No proxy server is required.
  */
-export const PROXY_POOL: string[] = [
-  "https://partscope-proxy.onrender.com/api/part",
-  "https://partscope-proxy.up.railway.app/api/part",
-];
+const RAW_DATABASE_BASES = [
+  import.meta.env.VITE_PARTS_DATABASE_RAW_BASE ?? "",
+  ...(import.meta.env.VITE_PARTS_DATABASE_RAW_FALLBACKS ?? "").split(","),
+]
+  .map((base) => base.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
 
 const TIMEOUT_MS = 8000;
 
-export async function fetchWithProxyRotation<T>(sku: string, pool = PROXY_POOL): Promise<T> {
-  let lastError: unknown;
-  for (const base of pool) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-    try {
-      const res = await fetch(`${base}?sku=${encodeURIComponent(sku)}`, { signal: ctrl.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status} from data source`);
-      return (await res.json()) as T;
-    } catch (error) {
-      lastError = error;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastError ?? new Error("No data sources are configured");
+type Raw = Record<string, any>;
+
+function emptyRemoteRecord(sku: string): Raw {
+  return {
+    sku,
+    name: "",
+    brand: "",
+    analogs: [],
+    analogues: [],
+    compatibility: [],
+    applicability: [],
+    diagram: { diagramUrl: "", imageUrl: "", specifications: [], hotspots: [] },
+    diagramUrl: "",
+    specifications: [],
+    specs: [],
+    hotspots: [],
+  };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Raw = { [key: string]: any };
+/**
+ * Fetch a per-part JSON record directly from GitHub Raw. A missing repository
+ * configuration or 404 returns an empty record so the UI can show no results.
+ * Other failures try the next configured raw source before returning empty.
+ */
+export async function fetchWithProxyRotation<T>(sku: string, rawBases = RAW_DATABASE_BASES): Promise<T> {
+  if (!rawBases.length) return emptyRemoteRecord(sku) as T;
+
+  for (const base of rawBases) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const url = `${base}/${encodeURIComponent(sku)}.json`;
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+
+      if (response.status === 404) continue;
+      if (!response.ok) continue;
+
+      const json = await response.json();
+      if (!json || typeof json !== "object" || Array.isArray(json)) continue;
+      return json as T;
+    } catch {
+      // Try the next configured GitHub Raw database.
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return emptyRemoteRecord(sku) as T;
+}
+
 const str = (value: unknown) => (value == null ? "" : String(value));
 const arr = (value: unknown): Raw[] => (Array.isArray(value) ? (value as Raw[]) : []);
 const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9а-я]+/gi, "-");
 
-/** Convert a live provider response into the UI contract. No demo values are generated. */
+/** Map both the documented open JSON format and legacy field names to the UI contract. */
 export function normalizeRemote(
   sku: string,
   raw: Raw,
 ): Omit<PartData, "diagram"> & { diagramUrl: string; hotspots: Hotspot[] } {
-  const analogues: Analogue[] = arr(raw["analogues"])
+  const analogues: Analogue[] = arr(raw["analogs"] ?? raw["analogues"])
     .map((item) => ({
       brand: str(item["brand"] ?? item["manufacturer"]),
       sku: sanitizeSku(str(item["sku"] ?? item["number"] ?? item["articleNumber"])),
@@ -80,22 +117,23 @@ export function normalizeRemote(
     }))
     .filter((item) => item.sku);
 
-  const applicability: Vehicle[] = arr(raw["applicability"])
+  const applicability: Vehicle[] = arr(raw["compatibility"] ?? raw["applicability"])
     .map((item) => {
-      const make = str(item["make"] ?? item["manufacturer"]);
+      const make = str(item["brand"] ?? item["make"] ?? item["manufacturer"]);
       const model = str(item["model"]);
       const engine = str(item["engine"]);
-      const years = str(item["years"] ?? [item["yearFrom"], item["yearTo"]].filter(Boolean).join("–"));
-      return { id: str(item["id"]) || slug(`${make}-${model}-${engine}`), make, model, years, engine };
+      const years = str(item["years"] ?? item["year"] ?? [item["yearFrom"], item["yearTo"]].filter(Boolean).join("–"));
+      return { id: str(item["id"]) || slug(`${make}-${model}-${engine}-${years}`), make, model, years, engine };
     })
     .filter((item) => item.make || item.model);
 
-  const rawSpecs = raw["specifications"] ?? raw["specs"];
+  const diagram = (raw["diagram"] && typeof raw["diagram"] === "object" ? raw["diagram"] : {}) as Raw;
+  const rawSpecs = diagram["specifications"] ?? raw["specifications"] ?? raw["specs"];
   const specs: Spec[] = Array.isArray(rawSpecs)
     ? arr(rawSpecs)
         .map((item) => ({
           key: str(item["key"] ?? item["label"] ?? item["name"]),
-          label: str(item["label"] ?? item["name"] ?? item["key"]),
+          label: str(item["name"] ?? item["label"] ?? item["key"]),
           value: str(item["value"]),
           unit: item["unit"] ? str(item["unit"]) : undefined,
         }))
@@ -104,14 +142,13 @@ export function normalizeRemote(
       ? Object.entries(rawSpecs as Raw).map(([key, value]) => ({ key, label: key, value: str(value) }))
       : [];
 
-  const diagram = raw["diagram"] as Raw | undefined;
-  const diagramUrl = str(raw["diagramUrl"] ?? diagram?.["imageUrl"]);
-  const hotspots: Hotspot[] = arr(raw["hotspots"] ?? diagram?.["hotspots"])
+  const diagramUrl = str(diagram["diagramUrl"] ?? diagram["imageUrl"] ?? raw["diagramUrl"]);
+  const hotspots: Hotspot[] = arr(diagram["hotspots"] ?? raw["hotspots"])
     .map((item, index) => {
       const hotspotSpecs = arr(item["specs"])
         .map((spec) => ({
           key: str(spec["key"] ?? spec["label"] ?? spec["name"]),
-          label: str(spec["label"] ?? spec["name"] ?? spec["key"]),
+          label: str(spec["name"] ?? spec["label"] ?? spec["key"]),
           value: str(spec["value"]),
           unit: spec["unit"] ? str(spec["unit"]) : undefined,
         }))
@@ -122,21 +159,17 @@ export function normalizeRemote(
         y: Number(item["y"]),
         radius: Number(item["radius"] ?? 28),
         name: str(item["name"]),
-        oem: str(item["oem"]),
+        oem: str(item["oem"] ?? item["sku"] ?? item["partNumber"]),
         details: str(item["details"]),
         ...(hotspotSpecs.length ? { specs: hotspotSpecs } : {}),
       };
     })
     .filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y));
 
-  if (!analogues.length && !applicability.length && !specs.length && !diagramUrl) {
-    throw new Error("The data source returned no catalogue data for this part number.");
-  }
-
   return {
     sku,
-    name: str(raw["name"]),
-    brand: str(raw["brand"]),
+    name: str(raw["name"] ?? raw["partName"]),
+    brand: str(raw["brand"] ?? raw["manufacturer"]),
     analogues,
     applicability,
     specs,
@@ -147,9 +180,8 @@ export function normalizeRemote(
   };
 }
 
-// Versioned keys deliberately bypass older cached demo/mock records.
-const cacheKey = (sku: string) => `part:v4:${sku}`;
-const imageKey = (sku: string) => `img:v4:${sku}`;
+const cacheKey = (sku: string) => `part:v5:${sku}`;
+const imageKey = (sku: string) => `img:v5:${sku}`;
 
 async function cacheImage(sku: string, url: string) {
   if (!url || url.startsWith("data:") || url.startsWith("/")) return;
@@ -168,6 +200,10 @@ async function resolveImage(sku: string, url: string) {
 
 function measure(url: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve) => {
+    if (!url) {
+      resolve({ width: 0, height: 0 });
+      return;
+    }
     const image = new Image();
     image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
     image.onerror = () => resolve({ width: 0, height: 0 });
@@ -175,7 +211,7 @@ function measure(url: string): Promise<{ width: number; height: number }> {
   });
 }
 
-/** Return only cached or live provider data. Network failures remain visible to the UI. */
+/** Return live catalogue data, or a valid empty state when the part is not present. */
 export async function getPart(rawSku: string): Promise<PartData & { fromCache: boolean }> {
   const sku = sanitizeSku(rawSku);
   if (!sku) throw new Error("Enter a part number first.");
@@ -188,14 +224,28 @@ export async function getPart(rawSku: string): Promise<PartData & { fromCache: b
 
   const raw = await fetchWithProxyRotation<Raw>(sku);
   const { diagramUrl, hotspots, ...rest } = normalizeRemote(sku, raw);
-  const size = diagramUrl ? await measure(diagramUrl) : { width: 0, height: 0 };
+  const size = await measure(diagramUrl);
   const data: PartData = {
     ...rest,
     diagram: { imageUrl: diagramUrl, ...size, hotspots },
   };
 
-  await set(cacheKey(sku), data).catch(() => {});
-  await cacheImage(sku, diagramUrl);
+  const hasRealData = Boolean(
+    data.name ||
+    data.brand ||
+    data.analogues.length ||
+    data.applicability.length ||
+    data.specs.length ||
+    data.diagram.imageUrl ||
+    data.diagram.hotspots.length
+  );
+
+  // Don't cache missing records; a newly added database file should become visible immediately.
+  if (hasRealData) {
+    await set(cacheKey(sku), data).catch(() => {});
+    await cacheImage(sku, diagramUrl);
+  }
+
   const imageUrl = await resolveImage(sku, diagramUrl);
   return { ...data, diagram: { ...data.diagram, imageUrl }, fromCache: false };
 }
