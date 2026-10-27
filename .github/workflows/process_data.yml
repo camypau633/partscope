@@ -1,12 +1,8 @@
-name: Process parts data
+name: Import TecDoc source tables
 
 on:
   workflow_dispatch:
-    inputs:
-      source_url:
-        description: "Direct URL to a ZIP or tar archive containing normalized CSV tables"
-        required: true
-        type: string
+  workflow_call:
 
 permissions:
   contents: write
@@ -21,87 +17,130 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Checkout main
+      - name: Checkout PartScope
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 1
 
-      - name: Set up Python 3.10
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Download source archive to runner workspace
+      - name: Check available runner storage
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP"
+          mkdir -p raw_data/2Q2018 raw_data/1Q2019
+
+      - name: Download only required CSV files and image-path metadata
         env:
-          SOURCE_URL: ${{ inputs.source_url }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/partscope-source" "$RUNNER_TEMP/partscope-extracted" "$RUNNER_TEMP/partscope-csv"
-          echo "Runner disk space before download:"
-          df -h "$RUNNER_TEMP"
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          from pathlib import Path
 
-          # This downloads to the GitHub runner, not to the user's computer.
-          # Standard hosted runners have limited disk space; a 100 GB archive
-          # will not fit and must be split/hosted in smaller files or processed
-          # on infrastructure with larger storage.
-          curl --fail --location --retry 3 --connect-timeout 30 \
-            --output "$RUNNER_TEMP/partscope-source/source-archive" \
-            "$SOURCE_URL"
+          SOURCES = {
+              "2Q2018": {
+                  "repo": "tecdocSQL/tecdocdatabase2Q2018",
+                  "tables": (
+                      "articles.csv", "suppliers.csv", "article_attributes.csv",
+                      "article_cross_list.csv", "article_oe_numbers.csv",
+                      "article_informations.csv", "manufacturers.csv", "models.csv",
+                      "passengercars.csv", "passengercars_link_engines.csv", "engines.csv",
+                  ),
+              },
+              "1Q2019": {
+                  "repo": "tecdocSQL/tecdocdatabase1Q2019",
+                  "tables": (
+                      "articles.csv", "suppliers.csv", "article_mediainformation.csv",
+                  ),
+              },
+          }
 
-          echo "Downloaded archive size:"
-          du -h "$RUNNER_TEMP/partscope-source/source-archive"
-          df -h "$RUNNER_TEMP"
+          def fetch(url, destination):
+              request = urllib.request.Request(
+                  url,
+                  headers={"User-Agent": "PartScope-data-import",
+                           "Authorization": "Bearer " + os.environ.get("GH_TOKEN", "")},
+              )
+              with urllib.request.urlopen(request, timeout=60) as response, open(destination, "wb") as out:
+                  while True:
+                      block = response.read(1024 * 1024)
+                      if not block:
+                          break
+                      out.write(block)
 
-      - name: Extract archive and collect normalized CSV tables
-        run: |
-          set -euo pipefail
-          ARCHIVE="$RUNNER_TEMP/partscope-source/source-archive"
-          EXTRACT_DIR="$RUNNER_TEMP/partscope-extracted"
-          CSV_DIR="$RUNNER_TEMP/partscope-csv"
-          mkdir -p "$EXTRACT_DIR" "$CSV_DIR"
+          for label, config in SOURCES.items():
+              repo = config["repo"]
+              outdir = Path("raw_data") / label
+              outdir.mkdir(parents=True, exist_ok=True)
+              tree_url = "https://api.github.com/repos/" + repo + "/git/trees/main?recursive=1"
+              tree_file = outdir / "tree.json"
+              fetch(tree_url, tree_file)
+              tree = json.loads(tree_file.read_text(encoding="utf-8"))
+              if tree.get("truncated"):
+                  raise SystemExit("GitHub tree response was truncated for " + repo)
+              paths = [entry["path"] for entry in tree.get("tree", []) if entry.get("type") == "blob"]
 
-          if unzip -tq "$ARCHIVE" >/dev/null 2>&1; then
-            unzip -q "$ARCHIVE" -d "$EXTRACT_DIR"
-          elif tar -tf "$ARCHIVE" >/dev/null 2>&1; then
-            tar -xf "$ARCHIVE" -C "$EXTRACT_DIR"
-          else
-            echo "::error::Source URL must point directly to a ZIP or tar archive."
-            exit 1
-          fi
+              # This is only a text manifest of existing image paths; no image bytes are downloaded.
+              if label == "1Q2019":
+                  image_paths = sorted(path for path in paths if path.startswith("images/"))
+                  (outdir / "images_manifest.txt").write_text(
+                      "\n".join(image_paths) + ("\n" if image_paths else ""), encoding="utf-8"
+                  )
+                  print("Image paths indexed:", len(image_paths))
 
-          find "$EXTRACT_DIR" -type f \( \
-            -iname 'parts.csv' -o -iname 'parts.csv.*' -o \
-            -iname 'analogs.csv' -o -iname 'analogs.csv.*' -o \
-            -iname 'compatibility.csv' -o -iname 'compatibility.csv.*' -o \
-            -iname 'specifications.csv' -o -iname 'specifications.csv.*' -o \
-            -iname 'article_criteria.csv' -o -iname 'article_criteria.csv.*' -o \
-            -iname 'criteria.csv' -o -iname 'criteria.csv.*' -o \
-            -iname 'diagrams.csv' -o -iname 'diagrams.csv.*' -o \
-            -iname 'graphics.csv' -o -iname 'graphics.csv.*' -o \
-            -iname 'article_graphics.csv' -o -iname 'article_graphics.csv.*' -o \
-            -iname 'article_images.csv' -o -iname 'article_images.csv.*' \) -print0 |
-          while IFS= read -r -d '' file; do
-            cp "$file" "$CSV_DIR/$(basename "$file")"
-          done
+              for table in config["tables"]:
+                  matching = [p for p in paths if p == table or p.startswith(table + ".")]
+                  if not matching:
+                      print("Optional table absent:", repo + "/" + table)
+                      continue
+                  matching.sort(key=lambda p: (0, int(p.rsplit(".", 1)[1]))
+                                if p.rsplit(".", 1)[-1].isdigit() else (1, 0))
+                  for path in matching:
+                      dest = outdir / Path(path).name
+                      if dest.exists() and dest.stat().st_size:
+                          continue
+                      url = "https://raw.githubusercontent.com/" + repo + "/main/" + path
+                      print("Downloading", repo + "/" + path)
+                      fetch(url, dest)
 
-          if ! find "$CSV_DIR" -maxdepth 1 -type f -iname 'parts.csv*' | grep -q .; then
-            echo "::error::Archive contains no parts.csv. The splitter requires normalized CSV tables; raw TecDoc relational tables need a mapping/join step first."
-            exit 1
-          fi
+                  # Concatenate only split parts, in numeric order, then remove the parts.
+                  chunks = [outdir / Path(p).name for p in matching
+                            if Path(p).name.startswith(table + ".")]
+                  if chunks:
+                      combined = outdir / table
+                      with combined.open("wb") as target:
+                          for chunk in chunks:
+                              with chunk.open("rb") as source:
+                                  while True:
+                                      block = source.read(1024 * 1024)
+                                      if not block:
+                                          break
+                                      target.write(block)
+                      for chunk in chunks:
+                          chunk.unlink()
+                      print("Combined", table, "from", len(chunks), "parts")
 
-          echo "CSV inputs found:"
-          find "$CSV_DIR" -maxdepth 1 -type f -printf '%f (%s bytes)\n' | sort
+              tree_file.unlink(missing_ok=True)
+          PY
 
-      - name: Build sharded JSON catalogue
+      - name: Build compact JSON shards
         run: |
           set -euo pipefail
           python tools/splitter.py \
-            --input "$RUNNER_TEMP/partscope-csv" \
+            --input raw_data \
             --output public/data \
             --clean-output
 
-      - name: Validate generated shards against GitHub Pages limits
+      - name: Validate generated shards
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -110,21 +149,19 @@ jobs:
             echo "::error::No JSON shards were generated."
             exit 1
           fi
-
           total_bytes=0
           for shard in "${shards[@]}"; do
             bytes=$(stat -c '%s' "$shard")
             total_bytes=$((total_bytes + bytes))
             if [ "$bytes" -ge 90000000 ]; then
-              echo "::error::$(basename "$shard") is at least 90 MB. GitHub's 100 MB file limit makes committing it unsafe."
+              echo "::error::$(basename "$shard") is at least 90 MB."
               exit 1
             fi
           done
-
           echo "Shard count: ${#shards[@]}"
-          echo "Total uncompressed shard bytes: $total_bytes"
+          echo "Total shard bytes: $total_bytes"
           if [ "$total_bytes" -ge 800000000 ]; then
-            echo "::error::Generated data is at least 800 MB. This workflow stops before pushing a catalogue that risks exceeding GitHub Pages/repository limits."
+            echo "::error::Generated catalogue is at least 800 MB; refusing to push it."
             exit 1
           fi
 
@@ -136,15 +173,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A public/data
-
           if git diff --cached --quiet; then
             echo "Generated data is unchanged; nothing to commit."
             exit 0
           fi
-
-          git commit -m "Update generated parts data shards"
+          git commit -m "Import TecDoc catalogue shards"
           git push origin HEAD:main
-
-          # Pushes authenticated with GITHUB_TOKEN do not automatically start
-          # other workflows, so dispatch the Pages deployment explicitly.
           gh workflow run deploy.yml --ref main
