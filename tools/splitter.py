@@ -37,6 +37,7 @@ whole catalogue in RAM.
 import argparse
 import csv
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -45,10 +46,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
+# Configure this only after verifying the real drawing CDN URL pattern.
+# Example: "https://your-real-cdn.example/drawings/{id}.jpg"
+# Empty by default so the exporter never invents image URLs.
+DRAWING_CDN_URL = os.environ.get("DRAWING_CDN_URL", "").strip()
+
 FIELD_ALIASES = {
     "sku": (
         "sku", "article_number", "art_article_nr", "part_number",
         "partnumber", "article", "oem", "number", "artnr",
+        "article_no", "article_nr", "oem_number",
     ),
     "source_sku": (
         "source_sku", "source_article", "original_sku", "base_sku",
@@ -68,9 +75,11 @@ FIELD_ALIASES = {
     "year_to": ("year_to", "yearto", "year_end", "production_to"),
     "year": ("year", "model_year"),
     "engine": ("engine", "engine_code", "motor", "engine_type"),
-    "value": ("value", "spec_value", "attribute_value", "content"),
+    "value": ("value", "spec_value", "attribute_value", "content", "criteria_value", "crit_value", "text_value"),
+    "drawing_id": ("drawing_id", "graphic_id", "media_id", "picture_id", "image_id", "gd_id", "doc_id"),
+    "criterion": ("criterion", "criterion_name", "criteria_name", "crit_name", "attribute_name", "property_name", "key", "label"),
     "unit": ("unit", "unit_name", "measurement_unit"),
-    "diagram_url": ("diagram_url", "image_url", "image", "media_url", "url"),
+    "diagram_url": ("diagram_url", "image_url", "image", "media_url", "url", "graphic_url", "picture_url"),
 }
 
 
@@ -92,11 +101,17 @@ def get_value(row, field):
 
 
 def csv_files(input_dir, family):
+    aliases = {
+        "specifications": ("specifications", "article_criteria", "criteria"),
+        "diagrams": ("diagrams", "graphics", "article_graphics", "article_images"),
+    }.get(family, (family,))
+    prefixes = tuple(alias + ".csv" for alias in aliases)
     files = [
         path for path in input_dir.iterdir()
-        if path.is_file() and (
-            path.name.lower() == family + ".csv"
-            or path.name.lower().startswith(family + ".csv.")
+        if path.is_file() and any(
+            path.name.lower() == prefix
+            or path.name.lower().startswith(prefix + ".")
+            for prefix in prefixes
         )
     ]
 
@@ -169,8 +184,10 @@ def create_schema(db):
         );
 
         CREATE TABLE diagrams (
-          sku TEXT PRIMARY KEY,
-          diagram_url TEXT NOT NULL DEFAULT ''
+          sku TEXT NOT NULL,
+          diagram_url TEXT NOT NULL DEFAULT '',
+          drawing_id TEXT NOT NULL DEFAULT '',
+          UNIQUE(sku, diagram_url, drawing_id)
         );
 
         CREATE INDEX idx_analogs_source ON analogs(source_sku);
@@ -209,8 +226,8 @@ def insert_batch(db, family, batch):
 
     elif family == "diagrams":
         db.executemany("""
-            INSERT INTO diagrams(sku, diagram_url) VALUES(?,?)
-            ON CONFLICT(sku) DO UPDATE SET diagram_url=excluded.diagram_url
+            INSERT OR IGNORE INTO diagrams(sku, diagram_url, drawing_id)
+            VALUES(?,?,?)
         """, batch)
 
 
@@ -261,7 +278,7 @@ def import_family(db, input_dir, family):
 
             elif family == "specifications":
                 sku = clean_sku(get_value(row, "sku"))
-                name = get_value(row, "name")
+                name = get_value(row, "criterion") or get_value(row, "name")
                 value = get_value(row, "value")
                 if not sku or not name or not value:
                     continue
@@ -270,9 +287,12 @@ def import_family(db, input_dir, family):
             elif family == "diagrams":
                 sku = clean_sku(get_value(row, "sku"))
                 url = get_value(row, "diagram_url")
-                if not sku or not url:
+                drawing_id = get_value(row, "drawing_id")
+                if not url and drawing_id and DRAWING_CDN_URL and "{id}" in DRAWING_CDN_URL:
+                    url = DRAWING_CDN_URL.format(id=drawing_id)
+                if not sku or not (url or drawing_id):
                     continue
-                batch.append((sku, url))
+                batch.append((sku, url, drawing_id))
 
             if len(batch) >= 5000:
                 insert_batch(db, family, batch)
@@ -333,17 +353,35 @@ def build_part_record(db, sku, brand, name):
         )
     ]
 
-    diagram_row = db.execute(
-        "SELECT diagram_url FROM diagrams WHERE sku=?",
+    specs_object = {
+        spec_name: spec_value
+        for spec_name, spec_value, _unit in db.execute(
+            "SELECT name, value, unit FROM specifications WHERE sku=? ORDER BY rowid",
+            (sku,),
+        )
+    }
+
+    technical_drawings = []
+    for drawing_url, drawing_id in db.execute(
+        "SELECT diagram_url, drawing_id FROM diagrams WHERE sku=? ORDER BY rowid",
         (sku,),
-    ).fetchone()
-    diagram_url = diagram_row[0] if diagram_row else ""
+    ):
+        resolved_url = drawing_url
+        if not resolved_url and drawing_id and DRAWING_CDN_URL and "{id}" in DRAWING_CDN_URL:
+            resolved_url = DRAWING_CDN_URL.format(id=drawing_id)
+        if resolved_url and resolved_url not in technical_drawings:
+            technical_drawings.append(resolved_url)
+
+    diagram_url = technical_drawings[0] if technical_drawings else ""
 
     return {
         "sku": sku,
         "brand": brand,
         "name": name,
+        "specs": specs_object,
+        "technical_drawings": technical_drawings,
         "analogs": analogs,
+        "analogues": analogs,
         "compatibility": compatibility,
         "specifications": specifications,
         "diagramUrl": diagram_url,
