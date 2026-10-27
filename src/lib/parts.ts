@@ -3,7 +3,7 @@ import demoDiagram from "@/assets/diagram-oil-filter.jpg";
 
 export type Analogue = { brand: string; sku: string; name: string; price?: number | undefined };
 export type Vehicle = { id: string; make: string; model: string; years: string; engine: string };
-export type Hotspot = { id: string; x: number; y: number; radius: number; name: string; oem: string; details: string };
+export type Hotspot = { id: string; x: number; y: number; radius: number; name: string; oem: string; details: string; specs?: Spec[] };
 /** One physical dimension, e.g. { key: "diameter", label: "Диаметр", value: 76, unit: "мм" } */
 export type Spec = { key: string; label: string; value: string | number; unit?: string | undefined };
 /**
@@ -89,10 +89,19 @@ export function normalizeRemote(sku: string, raw: Raw): Omit<PartData, "diagram"
       ? Object.entries(rawSpecs as Raw).map(([k, v]) => ({ key: k, label: k, value: str(v) }))
       : [];
   const diagramUrl = str(raw['diagramUrl'] ?? (raw['diagram'] as Raw | undefined)?.['imageUrl']);
-  const hotspots = arr(raw['hotspots'] ?? (raw['diagram'] as Raw | undefined)?.['hotspots']).map((h, i) => ({
-    id: str(h['id'] ?? i + 1), x: Number(h['x']), y: Number(h['y']), radius: Number(h['radius'] ?? 28),
-    name: str(h['name']), oem: str(h['oem']), details: str(h['details']),
-  })).filter((h) => Number.isFinite(h['x']) && Number.isFinite(h['y']));
+  const hotspots = arr(raw['hotspots'] ?? (raw['diagram'] as Raw | undefined)?.['hotspots']).map((h, i) => {
+    const hotspotSpecs = arr(h['specs']).map((s) => ({
+      key: str(s['key'] ?? s['label'] ?? s['name']),
+      label: str(s['label'] ?? s['name'] ?? s['key']),
+      value: str(s['value']),
+      unit: s['unit'] ? str(s['unit']) : undefined,
+    })).filter((s) => s['label'] && s['value'] !== "");
+    return {
+      id: str(h['id'] ?? i + 1), x: Number(h['x']), y: Number(h['y']), radius: Number(h['radius'] ?? 28),
+      name: str(h['name']), oem: str(h['oem']), details: str(h['details']),
+      ...(hotspotSpecs.length ? { specs: hotspotSpecs } : {}),
+    };
+  }).filter((h) => Number.isFinite(h['x']) && Number.isFinite(h['y']));
   if (!analogues.length && !applicability.length && !specs.length && !diagramUrl) throw new Error("Empty donor response");
   return {
     sku, name: str(raw['name']), brand: str(raw['brand']),
