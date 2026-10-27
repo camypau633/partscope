@@ -319,40 +319,46 @@ def load_drawings(db, folder, article_to_sku, image_paths):
 
 
 def load_crosses(db, folder, sku_by_article):
-    """Import cross references only when both explicit article IDs resolve.
-
-    The observed raw rows have the shape: source article ID, target article ID,
-    external/reference number. Do not treat the third field as a PartScope SKU.
-    """
+    """Import only cross rows whose two endpoint IDs resolve to known article IDs."""
     path = folder / "article_cross_list.csv"
     if not path.exists():
         print("[INFO] article_cross_list.csv not present; analogues remain empty")
         return 0
-    count = 0
+
+    known = set(sku_by_article)
+    total = left_match = right_match = both_match = imported = 0
+    unmatched_samples = []
     batch = []
     for row in read_tsv(path):
         if len(row) < 2:
             continue
+        total += 1
         source_id, target_id = row[0].strip(), row[1].strip()
-        if source_id not in sku_by_article or target_id not in sku_by_article:
-            continue
-        source_sku = sku_by_article[source_id]
-        target_sku = sku_by_article[target_id]
-        if not source_sku or not target_sku or source_sku == target_sku:
-            continue
-        batch.append((source_sku, target_sku))
-        batch.append((target_sku, source_sku))
-        if len(batch) >= 5000:
-            db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
-            count += len(batch)
-            batch = []
+        left_ok, right_ok = source_id in known, target_id in known
+        left_match += int(left_ok)
+        right_match += int(right_ok)
+        if left_ok and right_ok:
+            both_match += 1
+            source_sku, target_sku = sku_by_article[source_id], sku_by_article[target_id]
+            if source_sku and target_sku and source_sku != target_sku:
+                batch.extend(((source_sku, target_sku), (target_sku, source_sku)))
+                if len(batch) >= 5000:
+                    db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
+                    imported += len(batch)
+                    batch = []
+        elif len(unmatched_samples) < 8:
+            unmatched_samples.append([source_id, target_id, row[2] if len(row) > 2 else ""])
     if batch:
         db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
-        count += len(batch)
+        imported += len(batch)
     db.commit()
-    print("[INFO] Verified article-ID cross references imported: {:,}".format(count))
-    return count
-
+    print("[CROSS-AUDIT] rows: {:,}; source IDs matched: {:,}; target IDs matched: {:,}; both matched: {:,}".format(
+        total, left_match, right_match, both_match
+    ))
+    if unmatched_samples:
+        print("[CROSS-AUDIT] unmatched examples: {}".format(json.dumps(unmatched_samples, ensure_ascii=False)))
+    print("[INFO] Verified article-ID cross references imported: {:,}".format(imported))
+    return imported
 
 def import_normalized(db, input_dir):
     """Compatibility fallback for a prepared CSV set."""
@@ -387,26 +393,44 @@ def import_normalized(db, input_dir):
 
 
 def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
+    """Export records grouped into shards; when requested, choose enriched SKUs globally."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    prefixes = [row[0] for row in db.execute("SELECT DISTINCT substr(sku,1,2) FROM parts ORDER BY 1")]
+    if prioritize_enriched and limit is not None:
+        rows = db.execute("""
+            SELECT sku, brand, name FROM parts
+            ORDER BY
+              (EXISTS(SELECT 1 FROM specs s WHERE s.sku=parts.sku)) DESC,
+              (EXISTS(SELECT 1 FROM analogues a WHERE a.source_sku=parts.sku)) DESC,
+              (EXISTS(SELECT 1 FROM drawings d WHERE d.sku=parts.sku)) DESC,
+              (EXISTS(SELECT 1 FROM compatibility c WHERE c.sku=parts.sku)) DESC,
+              sku
+            LIMIT ?
+        """, (limit,)).fetchall()
+        selected = {}
+        for sku, brand, name in rows:
+            selected.setdefault(sku[:2], []).append((sku, brand, name))
+        prefixes = sorted(selected)
+        print("[INFO] Globally selected {} records for enriched smoke sample.".format(len(rows)))
+    else:
+        prefixes = [row[0] for row in db.execute("SELECT DISTINCT substr(sku,1,2) FROM parts ORDER BY 1")]
+        selected = None
+
     exported = 0
     for prefix in prefixes:
         destination = output_dir / (prefix + ".json")
         temporary = destination.with_suffix(".json.tmp")
         first = True
         count = 0
-        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        with temporary.open("w", encoding="utf-8", newline="\\n") as stream:
             stream.write("{")
-            ordering = (
-                "ORDER BY "
-                "(EXISTS(SELECT 1 FROM specs s WHERE s.sku=parts.sku)) DESC, "
-                "(EXISTS(SELECT 1 FROM analogues a WHERE a.source_sku=parts.sku)) DESC, "
-                "(EXISTS(SELECT 1 FROM drawings d WHERE d.sku=parts.sku)) DESC, "
-                "(EXISTS(SELECT 1 FROM compatibility c WHERE c.sku=parts.sku)) DESC, sku"
-                if prioritize_enriched else "ORDER BY sku"
-            )
-            query = "SELECT sku,brand,name FROM parts WHERE substr(sku,1,2)=? " + ordering
-            for (sku, brand, name) in db.execute(query, (prefix,)):
+            if selected is not None:
+                part_rows = selected[prefix]
+            else:
+                part_rows = db.execute(
+                    "SELECT sku,brand,name FROM parts WHERE substr(sku,1,2)=? ORDER BY sku",
+                    (prefix,)
+                )
+            for sku, brand, name in part_rows:
                 specs = {}
                 for spec_name, value, unit in db.execute(
                         "SELECT name,value,unit FROM specs WHERE sku=? ORDER BY rowid", (sku,)):
@@ -434,15 +458,10 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
                 first = False
                 count += 1
                 exported += 1
-                if limit is not None and exported >= limit:
-                    break
             stream.write("}")
         temporary.replace(destination)
         print("[SHARD] {}.json: {:,} SKUs".format(prefix, count))
-        if limit is not None and exported >= limit:
-            break
     return exported, len(prefixes)
-
 
 
 def inspect_raw_layout(input_dir):
