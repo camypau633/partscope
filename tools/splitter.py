@@ -334,14 +334,24 @@ def load_crosses(db, folder, sku_by_article):
     # The second column is NOT a target article ID. Resolve it with the
     # compound key (supplier ID, normalized article number) from articles.csv.
     target_by_supplier_number = {}
+    ambiguous_targets = set()
     for article in read_tsv(articles_path):
         if len(article) < 3:
             continue
         article_id, number, supplier_id = article[0].strip(), article[1].strip(), article[2].strip()
         target_sku = sku_by_article.get(article_id, clean_sku(number))
         normalized_number = clean_sku(number)
-        if supplier_id and normalized_number and target_sku:
-            target_by_supplier_number.setdefault((supplier_id, normalized_number), target_sku)
+        key = (supplier_id, normalized_number)
+        if not supplier_id or not normalized_number or not target_sku:
+            continue
+        existing = target_by_supplier_number.get(key)
+        if existing and existing != target_sku:
+            # Normalization can collapse distinct printed numbers (e.g. punctuation
+            # variants). Never pick an arbitrary target when the compound key collides.
+            ambiguous_targets.add(key)
+            target_by_supplier_number.pop(key, None)
+        elif key not in ambiguous_targets:
+            target_by_supplier_number[key] = target_sku
 
     total = source_match = target_match = both_match = imported = 0
     unmatched_samples = []
