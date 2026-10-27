@@ -279,7 +279,7 @@ def load_specs(db, folder, article_to_sku):
         if not label or not value or value == "-" or not DIMENSION_RE.search(label):
             continue
         unit = ""
-        unit_match = re.search(r"\\b(mm|cm|m|in|inch|°|bar|kg|g)\\b", value, re.I)
+        unit_match = re.search(r"\b(mm|cm|m|in|inch|°|bar|kg|g)\b", value, re.I)
         if unit_match:
             unit = unit_match.group(1)
         else:
@@ -386,7 +386,7 @@ def import_normalized(db, input_dir):
     return True
 
 
-def export_shards(db, output_dir, limit=None):
+def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
     output_dir.mkdir(parents=True, exist_ok=True)
     prefixes = [row[0] for row in db.execute("SELECT DISTINCT substr(sku,1,2) FROM parts ORDER BY 1")]
     exported = 0
@@ -397,8 +397,16 @@ def export_shards(db, output_dir, limit=None):
         count = 0
         with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write("{")
-            for (sku, brand, name) in db.execute(
-                    "SELECT sku,brand,name FROM parts WHERE substr(sku,1,2)=? ORDER BY sku", (prefix,)):
+            ordering = (
+                "ORDER BY "
+                "(EXISTS(SELECT 1 FROM specs s WHERE s.sku=parts.sku)) DESC, "
+                "(EXISTS(SELECT 1 FROM analogues a WHERE a.source_sku=parts.sku)) DESC, "
+                "(EXISTS(SELECT 1 FROM drawings d WHERE d.sku=parts.sku)) DESC, "
+                "(EXISTS(SELECT 1 FROM compatibility c WHERE c.sku=parts.sku)) DESC, sku"
+                if prioritize_enriched else "ORDER BY sku"
+            )
+            query = "SELECT sku,brand,name FROM parts WHERE substr(sku,1,2)=? " + ordering
+            for (sku, brand, name) in db.execute(query, (prefix,)):
                 specs = {}
                 for spec_name, value, unit in db.execute(
                         "SELECT name,value,unit FROM specs WHERE sku=? ORDER BY rowid", (sku,)):
@@ -486,6 +494,8 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("public/data"))
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--clean-output", action="store_true")
+    parser.add_argument("--prioritize-enriched", action="store_true",
+                        help="Export records with imported linked details first.")
     parser.add_argument("--inspect-layout", action="store_true",
                         help="Report actual raw TecDoc row shapes without generating catalogue data.")
     args = parser.parse_args()
@@ -531,7 +541,21 @@ def main():
                 print("[ERROR] No articles imported. Inspect the downloaded TecDoc CSV layout.", file=sys.stderr)
                 return 1
             print("[INFO] Unique SKUs: {:,}".format(count))
-            exported, shard_count = export_shards(db, output_dir, args.limit)
+            exported, shard_count = export_shards(
+                db, output_dir, args.limit, prioritize_enriched=args.prioritize_enriched
+            )
+            for table in ("specs", "analogues", "drawings", "compatibility"):
+                print("[COVERAGE] {} rows: {:,}".format(
+                    table, db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                ))
+            enriched = db.execute("""
+                SELECT COUNT(*) FROM parts p
+                WHERE EXISTS (SELECT 1 FROM specs s WHERE s.sku=p.sku)
+                   OR EXISTS (SELECT 1 FROM analogues a WHERE a.source_sku=p.sku)
+                   OR EXISTS (SELECT 1 FROM drawings d WHERE d.sku=p.sku)
+                   OR EXISTS (SELECT 1 FROM compatibility c WHERE c.sku=p.sku)
+            """).fetchone()[0]
+            print("[COVERAGE] parts with at least one linked detail record: {:,}".format(enriched))
             print("[DONE] Exported {:,} records.".format(exported))
             return 0
         finally:
