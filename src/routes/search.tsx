@@ -59,7 +59,7 @@ function Results() {
                 <Link to="/search" search={{ part: a.sku }} className="font-mono font-semibold hover:text-primary">{a.sku}</Link>
                 <div className="truncate text-xs text-muted-foreground">{a.brand} · {a.name}</div>
               </div>
-              {a.price && <div className="font-mono text-sm">{a.price.toLocaleString("ru-RU")} ₽</div>}
+              <button type="button" onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(`${a.brand} ${a.sku} ${a.name} купить`)}`, "_blank", "noopener,noreferrer")} className="bg-amber-500 text-black font-semibold px-4 py-2 rounded-lg text-sm hover:bg-amber-600 transition-colors">Где купить</button>
             </li>
           ))}
         </ul>
