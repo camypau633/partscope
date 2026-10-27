@@ -28,7 +28,7 @@ function Diagram() {
   const vehicle = data?.applicability.find((v) => v.id === car);
 
   async function share() {
-    const url = `${window.location.origin}/search?part=${encodeURIComponent(part)}`;
+    const url = `${window.location.origin}${import.meta.env.BASE_URL}search?part=${encodeURIComponent(part)}`;
     const title = `${part} — ${vehicle ? `${vehicle.make} ${vehicle.model}` : "PartScope"}`;
     if (navigator.share) {
       try { await navigator.share({ title, url }); } catch { /* cancelled */ }

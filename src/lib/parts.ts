@@ -35,9 +35,8 @@ export function sanitizeSku(input: string): string {
 }
 
 /**
- * Proxy pool, tried in order. The first entry is this app's own CORS proxy
- * (/api/public/part), which forwards to the TecDoc donor configured on the server.
- * Add external fallbacks (Render / Railway / Yandex Cloud) after it.
+ * External proxy pool. GitHub Pages is static hosting and cannot run the old
+ * /api/public/part server endpoint. If all proxies fail, the UI uses demo data.
  */
 export const PROXY_POOL: string[] = [
   "https://partscope-proxy.onrender.com/api/part",
