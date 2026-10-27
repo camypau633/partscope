@@ -22,6 +22,7 @@ export type PartData = {
   applicability: Vehicle[];
   diagram: { imageUrl: string; width: number; height: number; hotspots: Hotspot[] };
   specs: Spec[];
+  technicalDrawings: string[];
   source: "network";
   fetchedAt: number;
 };
@@ -49,6 +50,8 @@ function emptyRemoteRecord(sku: string): Raw {
     diagramUrl: "",
     specifications: [],
     specs: [],
+    technical_drawings: [],
+    technicalDrawings: [],
     hotspots: [],
   };
 }
@@ -150,7 +153,13 @@ export function normalizeRemote(
       ? Object.entries(rawSpecs as Raw).map(([key, value]) => ({ key, label: key, value: str(value) }))
       : [];
 
-  const diagramUrl = str(diagram["diagramUrl"] ?? diagram["imageUrl"] ?? raw["diagramUrl"]);
+  const drawingValues = arr(raw["technical_drawings"] ?? raw["technicalDrawings"] ?? raw["drawings"]);
+  const technicalDrawings = drawingValues
+    .map((item) => typeof item === "string" ? item.trim() : str(item["url"] ?? item["imageUrl"] ?? item["diagramUrl"]))
+    .filter((url) => /^https?:\\/\\//i.test(url));
+  const singleDiagram = str(diagram["diagramUrl"] ?? diagram["imageUrl"] ?? raw["diagramUrl"]);
+  if (singleDiagram && /^https?:\\/\\//i.test(singleDiagram) && !technicalDrawings.includes(singleDiagram)) technicalDrawings.unshift(singleDiagram);
+  const diagramUrl = singleDiagram || technicalDrawings[0] || "";
   const hotspots: Hotspot[] = arr(diagram["hotspots"] ?? raw["hotspots"])
     .map((item, index) => {
       const hotspotSpecs = arr(item["specs"])
@@ -181,6 +190,7 @@ export function normalizeRemote(
     analogues,
     applicability,
     specs,
+    technicalDrawings,
     diagramUrl,
     hotspots,
     source: "network",
@@ -188,8 +198,8 @@ export function normalizeRemote(
   };
 }
 
-const cacheKey = (sku: string) => `part:v7:${sku}`;
-const imageKey = (sku: string) => `img:v7:${sku}`;
+const cacheKey = (sku: string) => `part:v8:${sku}`;
+const imageKey = (sku: string) => `img:v8:${sku}`;
 
 async function cacheImage(sku: string, url: string) {
   if (!url || url.startsWith("data:") || url.startsWith("/")) return;
