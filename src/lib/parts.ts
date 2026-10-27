@@ -54,17 +54,19 @@ function emptyRemoteRecord(sku: string): Raw {
 }
 
 /**
- * Fetches exactly one JSON file from this GitHub Pages site.
- * With Vite's base set to "/partscope/", the URL becomes:
- * https://camypau633.github.io/partscope/data/<CLEAN_SKU>.json
+ * Fetch one shard based on the first two cleaned SKU characters, then select
+ * the exact record from its top-level SKU-keyed object.
+ *
+ * Example: SKU W712.9 -> clean SKU W7129 -> data/W7.json -> shard["W7129"].
  * No proxy rotation, third-party API, or fallback host is used.
  */
 export async function fetchWithProxyRotation<T>(sku: string): Promise<T> {
   const cleanSku = cleanPartNumber(sku);
   if (!cleanSku) return emptyRemoteRecord("") as T;
 
+  const prefix = cleanSku.slice(0, 2);
   const basePath = String(import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
-  const url = `${basePath}data/${encodeURIComponent(cleanSku)}.json`;
+  const url = `${basePath}data/${encodeURIComponent(prefix)}.json`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -77,22 +79,29 @@ export async function fetchWithProxyRotation<T>(sku: string): Promise<T> {
     });
 
     if (response.status === 404) {
-      console.info(`[Part Finder] No JSON record for SKU "${cleanSku}" (${url}).`);
+      console.info(`[Part Finder] Shard not found for SKU "${cleanSku}" (${url}).`);
       return emptyRemoteRecord(cleanSku) as T;
     }
     if (!response.ok) {
-      console.warn(`[Part Finder] JSON request failed: HTTP ${response.status} for ${url}`);
+      console.warn(`[Part Finder] Shard request failed: HTTP ${response.status} for ${url}`);
       return emptyRemoteRecord(cleanSku) as T;
     }
 
-    const json: unknown = await response.json();
-    if (!json || typeof json !== "object" || Array.isArray(json)) {
-      console.error(`[Part Finder] Invalid JSON object at ${url}`);
+    const shard: unknown = await response.json();
+    if (!shard || typeof shard !== "object" || Array.isArray(shard)) {
+      console.error(`[Part Finder] Invalid shard object at ${url}`);
       return emptyRemoteRecord(cleanSku) as T;
     }
-    return json as T;
+
+    const record = (shard as Raw)[cleanSku];
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      console.info(`[Part Finder] SKU "${cleanSku}" not present in shard ${url}.`);
+      return emptyRemoteRecord(cleanSku) as T;
+    }
+
+    return record as T;
   } catch (error) {
-    console.error(`[Part Finder] Could not fetch ${url}:`, error);
+    console.error(`[Part Finder] Could not fetch shard ${url}:`, error);
     return emptyRemoteRecord(cleanSku) as T;
   } finally {
     clearTimeout(timeout);
@@ -179,8 +188,8 @@ export function normalizeRemote(
   };
 }
 
-const cacheKey = (sku: string) => `part:v6:${sku}`;
-const imageKey = (sku: string) => `img:v6:${sku}`;
+const cacheKey = (sku: string) => `part:v7:${sku}`;
+const imageKey = (sku: string) => `img:v7:${sku}`;
 
 async function cacheImage(sku: string, url: string) {
   if (!url || url.startsWith("data:") || url.startsWith("/")) return;
