@@ -22,8 +22,8 @@ class TecDocJoinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / "article_attributes.csv").write_text(
-                "1\\t203\\t_NotDefined\\tдлина\\t1040 мм\\t1\\tNumeric\\n"
-                "999\\t203\\t_NotDefined\\tширина\\t99 мм\\t1\\tNumeric\\n",
+                "1\t203\t_NotDefined\tдлина\t1040 мм\t1\tNumeric\n"
+                "999\t203\t_NotDefined\tширина\t99 мм\t1\tNumeric\n",
                 encoding="utf-8",
             )
             db = sqlite3.connect(":memory:")
@@ -37,7 +37,7 @@ class TecDocJoinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / "article_mediainformation.csv").write_text(
-                "332\\tPicture\\t\\t0\\t\\t\\t5\\t\\tTM206248_WM.JPG\\tPicture\\n",
+                "332\tPicture\t\t0\t\t\t5\t\tTM206248_WM.JPG\tPicture\n",
                 encoding="utf-8",
             )
             db = sqlite3.connect(":memory:")
