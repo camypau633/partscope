@@ -2,8 +2,6 @@ name: Check PartScope build
 
 on:
   push:
-    branches: [main, recovery/github-pages-migration]
-  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -12,10 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
       - name: Install dependencies
-        run: npm install
+        run: bun install
       - name: Build
-        run: npm run build
+        run: bun run build
