@@ -156,9 +156,9 @@ export function normalizeRemote(
   const drawingValues = arr(raw["technical_drawings"] ?? raw["technicalDrawings"] ?? raw["drawings"]);
   const technicalDrawings = drawingValues
     .map((item) => typeof item === "string" ? item.trim() : str(item["url"] ?? item["imageUrl"] ?? item["diagramUrl"]))
-    .filter((url) => /^https?:\\/\\//i.test(url));
+    .filter((url) => (url.startsWith("http://") || url.startsWith("https://")));
   const singleDiagram = str(diagram["diagramUrl"] ?? diagram["imageUrl"] ?? raw["diagramUrl"]);
-  if (singleDiagram && /^https?:\\/\\//i.test(singleDiagram) && !technicalDrawings.includes(singleDiagram)) technicalDrawings.unshift(singleDiagram);
+  if (singleDiagram && (singleDiagram.startsWith("http://") || singleDiagram.startsWith("https://")) && !technicalDrawings.includes(singleDiagram)) technicalDrawings.unshift(singleDiagram);
   const diagramUrl = singleDiagram || technicalDrawings[0] || "";
   const hotspots: Hotspot[] = arr(diagram["hotspots"] ?? raw["hotspots"])
     .map((item, index) => {
