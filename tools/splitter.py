@@ -2,7 +2,7 @@
 # Compatible with Python 3.8.10 (including Windows 7 environments where supported).
 
 """
-Part Finder CSV -> sharded JSON exporter.
+PartScope CSV -> sharded JSON exporter. Cloud workflow downloads the source archive; this script processes the extracted, normalized CSV tables.
 
 Expected input files (each may also be split into .000, .001, ... chunks):
   parts.csv           brand, sku, name
@@ -12,7 +12,7 @@ Expected input files (each may also be split into .000, .001, ... chunks):
   diagrams.csv        sku, diagram_url
 
 Output example:
-  data/W7.json
+  public/data/W7.json
   {
     "W7129": {
       "sku": "W7129",
@@ -27,7 +27,7 @@ Output example:
 
 The CSV files must already be mapped to these logical relationships. A raw
 relational TecDoc dump with internal article/vehicle IDs needs a separate
-mapping/join step first. This script does not guess undocumented ID relations.
+mapping/join step first. This script does not download archives or guess undocumented ID relations. The cloud workflow must fetch and extract an archive containing these normalized CSV tables first.
 
 Uses only Python standard-library modules and a temporary SQLite database.
 It streams CSV input and exports one shard at a time instead of keeping the
@@ -428,8 +428,8 @@ def main():
         help="Input CSV directory (default: ./csv)",
     )
     parser.add_argument(
-        "--output", type=Path, default=Path("data"),
-        help="Output shard directory (default: ./data)",
+        "--output", type=Path, default=Path("public/data"),
+        help="Output shard directory (default: ./public/data)",
     )
     parser.add_argument(
         "--limit", type=int, default=None,
@@ -487,8 +487,7 @@ def main():
             print("[DONE] Exported {:,} SKU records into {} shard files.".format(
                 exported, shard_count
             ))
-            print("[NOTE] Upload/copy the generated data/*.json files into the "
-                  "repository's public data/ folder before deploying Pages.")
+            print("[NOTE] Shards were written to {}.".format(output_dir))
             print("[NOTE] This only reduces the number of files; large shards "
                   "can still exceed GitHub file-size or repository-size limits.")
             return 0
