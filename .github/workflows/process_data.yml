@@ -198,8 +198,8 @@ jobs:
               "required_fields=" + ",".join(sorted(required)),
               "drawings_and_compatibility_are_not_claimed_verified_by_this_smoke_test",
           ]
-          Path("catalogue-smoke-summary.txt").write_text("\\n".join(summary) + "\\n", encoding="utf-8")
-          print("\\n".join(summary))
+          Path("catalogue-smoke-summary.txt").write_text("\n".join(summary) + "\n", encoding="utf-8")
+          print("\n".join(summary))
           PY
 
       - name: Upload catalogue smoke-test artifacts
