@@ -129,12 +129,13 @@ def create_db(db):
     """)
 
 
-def load_articles(db, folder, suppliers_by_id, source_label):
+def load_articles(db, folder, suppliers_by_id, source_label, preserve_existing=False):
     path = folder / "articles.csv"
     if not path.exists():
         print("[WARN] Missing " + str(path), file=sys.stderr)
         return 0
     count = 0
+    article_map = {}
     batch = []
     # TecDoc article rows in these exports are tab-separated and headerless:
     # article ID, article number, supplier ID, generic-article ID, description...
@@ -146,8 +147,27 @@ def load_articles(db, folder, suppliers_by_id, source_label):
         if not sku:
             continue
         brand = suppliers_by_id.get(supplier_id, "")
+        article_map[article_id] = sku
         batch.append((sku, article_id, supplier_id, brand, name))
         if len(batch) >= 5000:
+            if preserve_existing:
+                db.executemany("INSERT OR IGNORE INTO parts(sku,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?)", batch)
+            else:
+                db.executemany("""
+                    INSERT INTO parts(sku,article_id,supplier_id,brand,name)
+                    VALUES(?,?,?,?,?)
+                    ON CONFLICT(sku) DO UPDATE SET
+                      article_id=CASE WHEN excluded.article_id='' THEN parts.article_id ELSE excluded.article_id END,
+                      supplier_id=CASE WHEN excluded.supplier_id='' THEN parts.supplier_id ELSE excluded.supplier_id END,
+                      brand=CASE WHEN excluded.brand='' THEN parts.brand ELSE excluded.brand END,
+                      name=CASE WHEN excluded.name='' THEN parts.name ELSE excluded.name END
+                """, batch)
+            count += len(batch)
+            batch = []
+    if batch:
+        if preserve_existing:
+            db.executemany("INSERT OR IGNORE INTO parts(sku,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?)", batch)
+        else:
             db.executemany("""
                 INSERT INTO parts(sku,article_id,supplier_id,brand,name)
                 VALUES(?,?,?,?,?)
@@ -157,22 +177,10 @@ def load_articles(db, folder, suppliers_by_id, source_label):
                   brand=CASE WHEN excluded.brand='' THEN parts.brand ELSE excluded.brand END,
                   name=CASE WHEN excluded.name='' THEN parts.name ELSE excluded.name END
             """, batch)
-            count += len(batch)
-            batch = []
-    if batch:
-        db.executemany("""
-            INSERT INTO parts(sku,article_id,supplier_id,brand,name)
-            VALUES(?,?,?,?,?)
-            ON CONFLICT(sku) DO UPDATE SET
-              article_id=CASE WHEN excluded.article_id='' THEN parts.article_id ELSE excluded.article_id END,
-              supplier_id=CASE WHEN excluded.supplier_id='' THEN parts.supplier_id ELSE excluded.supplier_id END,
-              brand=CASE WHEN excluded.brand='' THEN parts.brand ELSE excluded.brand END,
-              name=CASE WHEN excluded.name='' THEN parts.name ELSE excluded.name END
-        """, batch)
         count += len(batch)
     db.commit()
     print("[INFO] Articles from {}: {:,}".format(source_label, count))
-    return count
+    return article_map
 
 
 def load_suppliers(folder):
@@ -422,17 +430,17 @@ def main():
                     print("[ERROR] Expected raw_data/2Q2018 and raw_data/1Q2019.", file=sys.stderr)
                     return 2
                 suppliers = load_suppliers(text_dir)
-                load_articles(db, text_dir, suppliers, "2Q2018")
-                # Article IDs can differ between quarterly releases; load a second
-                # ID-to-SKU mapping and preserve the 2Q2018 text records.
-                load_articles(db, graphics_dir, load_suppliers(graphics_dir), "1Q2019")
-                article_to_sku = {article_id: sku for sku, article_id in db.execute(
-                    "SELECT sku,article_id FROM parts WHERE article_id<>''")}
-                load_specs(db, text_dir, article_to_sku)
+                article_map_2q = load_articles(db, text_dir, suppliers, "2Q2018")
+                # Quarterly article IDs are not assumed to be stable. Use the
+                # 1Q2019 map for media, while retaining 2Q2018 article text.
+                article_map_1q = load_articles(
+                    db, graphics_dir, load_suppliers(graphics_dir), "1Q2019",
+                    preserve_existing=True,
+                )
+                load_specs(db, text_dir, article_map_2q)
                 image_manifest = load_image_manifest(graphics_dir / "images_manifest.txt")
-                load_drawings(db, graphics_dir, article_to_sku, image_manifest)
-                sku_by_article = article_to_sku
-                load_crosses(db, text_dir, sku_by_article)
+                load_drawings(db, graphics_dir, article_map_1q, image_manifest)
+                load_crosses(db, text_dir, article_map_2q)
             count = db.execute("SELECT COUNT(*) FROM parts").fetchone()[0]
             if not count:
                 print("[ERROR] No articles imported. Inspect the downloaded TecDoc CSV layout.", file=sys.stderr)
