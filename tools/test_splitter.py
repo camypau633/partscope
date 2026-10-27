@@ -49,24 +49,31 @@ class TecDocJoinTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM drawings").fetchone()[0], 0)
             db.close()
 
-    def test_crosses_resolve_only_explicit_article_ids(self):
+    def test_crosses_resolve_target_by_supplier_and_article_number(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
+            # articles.csv layout: article ID, article number, supplier ID, generic ID, description
+            (folder / "articles.csv").write_text(
+                "100\tSRC-100\t10\t1\tSource part\n"
+                "200\tTARGET-200\t20\t1\tTarget part\n"
+                "300\tOTHER-300\t30\t1\tOther part\n",
+                encoding="utf-8",
+            )
+            # article_cross_list layout: source article ID, target supplier ID, target article number
             (folder / "article_cross_list.csv").write_text(
-                "100\t200\tEXTERNAL-REF\n"
-                "100\t999\tNOT-IN-ARTICLES\n",
+                "100\t20\tTARGET-200\n"
+                "100\t999\tNOT-IN-ARTICLES\n"
+                "999\t20\tTARGET-200\n",
                 encoding="utf-8",
             )
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
-            db.execute("INSERT INTO parts(sku, article_id) VALUES('AAA100', '100')")
-            db.execute("INSERT INTO parts(sku, article_id) VALUES('BBB200', '200')")
             count = splitter.load_crosses(
-                db, folder, {"100": "AAA100", "200": "BBB200"}
+                db, folder, {"100": "SRC100", "200": "TARGET200", "300": "OTHER300"}
             )
             pairs = set(db.execute("SELECT source_sku, sku FROM analogues"))
             self.assertEqual(count, 2)
-            self.assertEqual(pairs, {("AAA100", "BBB200"), ("BBB200", "AAA100")})
+            self.assertEqual(pairs, {("SRC100", "TARGET200"), ("TARGET200", "SRC100")})
             db.close()
 
 
