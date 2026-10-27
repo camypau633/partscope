@@ -256,96 +256,66 @@ def load_attribute_dictionary(folder):
 
 
 def load_specs(db, folder, article_to_sku):
-    """Resolve dimension labels/values through the actual item-attribute dictionary."""
-    dictionary = load_attribute_dictionary(folder)
-    count = 0
-    for filename in ("article_attributes.csv", "article_informations.csv"):
-        path = folder / filename
-        if not path.exists():
-            continue
-        batch = []
-        for row in read_tsv(path):
-            article_id = find_article_id(row, article_to_sku)
-            if not article_id:
-                continue
-            sku = article_to_sku[article_id]
-            resolved = [(index, dictionary.get(token, token)) for index, token in enumerate(row)]
-            label_index = None
-            label = ""
-            for index, value in resolved:
-                if index < 1:
-                    continue
-                if DIMENSION_RE.search(value or "") and value != article_id:
-                    label_index, label = index, value.strip()
-                    break
-            if label_index is None:
-                # Some exports carry the label directly instead of an item ID.
-                for index, token in enumerate(row):
-                    if index > 0 and DIMENSION_RE.search(token or "") and token != article_id:
-                        label_index, label = index, token.strip()
-                        break
-            if label_index is None:
-                continue
+    """Import only the verified article_attributes layout.
 
-            raw_value = next(
-                (token for token in row[label_index + 1:] if token and token != article_id),
-                "",
-            )
-            if not raw_value:
-                continue
-            value = dictionary.get(raw_value, raw_value).strip()
-            if not value or value == label:
-                continue
-            unit = ""
-            unit_match = re.search(r"\\b(mm|cm|m|in|inch|°|bar|kg|g)\\b", value, re.I)
-            if unit_match:
-                unit = unit_match.group(1)
-            batch.append((sku, label, value, unit))
-            if len(batch) >= 5000:
-                db.executemany("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)", batch)
-                count += len(batch)
-                batch = []
-        if batch:
+    Observed rows are: article ID, attribute ID, placeholder, label, value,
+    display flag, value type. Do not scan arbitrary columns for an article ID,
+    because attribute IDs can coincidentally match an article ID.
+    """
+    path = folder / "article_attributes.csv"
+    if not path.exists():
+        print("[WARN] article_attributes.csv missing; no specifications imported")
+        return 0
+    count = 0
+    batch = []
+    for row in read_tsv(path):
+        if len(row) < 5:
+            continue
+        article_id = row[0].strip()
+        if article_id not in article_to_sku:
+            continue
+        label = row[3].strip()
+        value = row[4].strip()
+        if not label or not value or value == "-" or not DIMENSION_RE.search(label):
+            continue
+        unit = ""
+        unit_match = re.search(r"\\b(mm|cm|m|in|inch|°|bar|kg|g)\\b", value, re.I)
+        if unit_match:
+            unit = unit_match.group(1)
+        else:
+            suffix_match = re.search(r"(мм|см|м|дюйм(?:а|ов)?|кг|г)$", value, re.I)
+            if suffix_match:
+                unit = suffix_match.group(1)
+        batch.append((article_to_sku[article_id], label, value, unit))
+        if len(batch) >= 5000:
             db.executemany("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)", batch)
             count += len(batch)
-        db.commit()
-    print("[INFO] Dimension-labelled attribute rows imported: {:,}".format(count))
+            batch = []
+    if batch:
+        db.executemany("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)", batch)
+        count += len(batch)
+    db.commit()
+    print("[INFO] Verified dimension rows imported: {:,}".format(count))
+    print("[INFO] article_informations.csv skipped until its article relationship is verified.")
+    return count
 
 
 def load_drawings(db, folder, article_to_sku, image_paths):
+    """Do not associate media with parts until an explicit relation is verified.
+
+    The observed article_mediainformation rows contain media metadata and a
+    filename, but the sampled layout does not expose an article ID. Matching
+    an arbitrary numeric field to articles would create false diagram links.
+    """
     path = folder / "article_mediainformation.csv"
     if not path.exists():
         print("[WARN] article_mediainformation.csv missing; no drawings imported")
         return 0
-    # Build a basename index from the Git tree metadata; no image files are fetched.
-    by_basename = {}
-    for image_path in image_paths:
-        by_basename.setdefault(Path(image_path).name.lower(), image_path)
-    count = 0
-    batch = []
-    for row in read_tsv(path):
-        article_id = find_article_id(row, article_to_sku)
-        if not article_id:
-            continue
-        sku = article_to_sku[article_id]
-        for token in row:
-            candidate = token.replace("\\", "/").strip()
-            basename = Path(candidate).name.lower()
-            actual_path = by_basename.get(basename)
-            if actual_path:
-                url = IMAGE_BASE + quote(actual_path, safe="/")
-                batch.append((sku, url))
-                break
-        if len(batch) >= 5000:
-            db.executemany("INSERT OR IGNORE INTO drawings(sku,url) VALUES(?,?)", batch)
-            count += len(batch)
-            batch = []
-    if batch:
-        db.executemany("INSERT OR IGNORE INTO drawings(sku,url) VALUES(?,?)", batch)
-        count += len(batch)
-    db.commit()
-    print("[INFO] Verified drawing links imported: {:,}".format(count))
-    return count
+    print("[INFO] Drawings skipped: article_mediainformation has no verified article-ID relation.")
+    print("[INFO] Image path manifest contains {} paths; filenames are not enough to link a part.".format(
+        len(image_paths)
+    ))
+    return 0
 
 
 def load_crosses(db, folder, sku_by_article):
