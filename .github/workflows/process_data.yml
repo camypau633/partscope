@@ -1,0 +1,140 @@
+name: Process parts data
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: "Direct URL to a ZIP or tar archive containing normalized CSV tables"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: process-parts-data
+  cancel-in-progress: false
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Download source archive to runner workspace
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/partscope-source" "$RUNNER_TEMP/partscope-extracted" "$RUNNER_TEMP/partscope-csv"
+          echo "Runner disk space before download:"
+          df -h "$RUNNER_TEMP"
+
+          # This downloads to the GitHub runner, not to the user's computer.
+          # Standard hosted runners have limited disk space; a 100 GB archive
+          # will not fit and must be split/hosted in smaller files or processed
+          # on infrastructure with larger storage.
+          curl --fail --location --retry 3 --connect-timeout 30 \
+            --output "$RUNNER_TEMP/partscope-source/source-archive" \
+            "$SOURCE_URL"
+
+          echo "Downloaded archive size:"
+          du -h "$RUNNER_TEMP/partscope-source/source-archive"
+          df -h "$RUNNER_TEMP"
+
+      - name: Extract archive and collect normalized CSV tables
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUNNER_TEMP/partscope-source/source-archive"
+          EXTRACT_DIR="$RUNNER_TEMP/partscope-extracted"
+          CSV_DIR="$RUNNER_TEMP/partscope-csv"
+          mkdir -p "$EXTRACT_DIR" "$CSV_DIR"
+
+          if unzip -tq "$ARCHIVE" >/dev/null 2>&1; then
+            unzip -q "$ARCHIVE" -d "$EXTRACT_DIR"
+          elif tar -tf "$ARCHIVE" >/dev/null 2>&1; then
+            tar -xf "$ARCHIVE" -C "$EXTRACT_DIR"
+          else
+            echo "::error::Source URL must point directly to a ZIP or tar archive."
+            exit 1
+          fi
+
+          find "$EXTRACT_DIR" -type f \\( \
+            -iname 'parts.csv' -o -iname 'parts.csv.*' -o \
+            -iname 'analogs.csv' -o -iname 'analogs.csv.*' -o \
+            -iname 'compatibility.csv' -o -iname 'compatibility.csv.*' -o \
+            -iname 'specifications.csv' -o -iname 'specifications.csv.*' -o \
+            -iname 'diagrams.csv' -o -iname 'diagrams.csv.*' \\) -print0 |
+          while IFS= read -r -d '' file; do
+            cp "$file" "$CSV_DIR/$(basename "$file")"
+          done
+
+          if ! find "$CSV_DIR" -maxdepth 1 -type f -iname 'parts.csv*' | grep -q .; then
+            echo "::error::Archive contains no parts.csv. The splitter requires normalized CSV tables; raw TecDoc relational tables need a mapping/join step first."
+            exit 1
+          fi
+
+          echo "CSV inputs found:"
+          find "$CSV_DIR" -maxdepth 1 -type f -printf '%f (%s bytes)\n' | sort
+
+      - name: Build sharded JSON catalogue
+        run: |
+          set -euo pipefail
+          python tools/splitter.py \
+            --input "$RUNNER_TEMP/partscope-csv" \
+            --output public/data \
+            --clean-output
+
+      - name: Validate generated shards against GitHub Pages limits
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          shards=(public/data/*.json)
+          if [ "${#shards[@]}" -eq 0 ]; then
+            echo "::error::No JSON shards were generated."
+            exit 1
+          fi
+
+          total_bytes=0
+          for shard in "${shards[@]}"; do
+            bytes=$(stat -c '%s' "$shard")
+            total_bytes=$((total_bytes + bytes))
+            if [ "$bytes" -ge 90000000 ]; then
+              echo "::error::$(basename "$shard") is at least 90 MB. GitHub's 100 MB file limit makes committing it unsafe."
+              exit 1
+            fi
+          done
+
+          echo "Shard count: ${#shards[@]}"
+          echo "Total uncompressed shard bytes: $total_bytes"
+          if [ "$total_bytes" -ge 800000000 ]; then
+            echo "::error::Generated data is at least 800 MB. This workflow stops before pushing a catalogue that risks exceeding GitHub Pages/repository limits."
+            exit 1
+          fi
+
+      - name: Commit generated shards to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A public/data
+
+          if git diff --cached --quiet; then
+            echo "Generated data is unchanged; nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "Update generated parts data shards"
+          git push origin HEAD:main
