@@ -51,7 +51,7 @@ jobs:
                   "repo": "tecdocSQL/tecdocdatabase2Q2018",
                   "tables": (
                       "articles.csv", "suppliers.csv", "article_attributes.csv",
-                      "article_informations.csv", "article_cross_list.csv",
+                      "article_informations.csv", "items_atributes.csv", "article_cross_list.csv",
                   ),
               },
               "1Q2019": {
