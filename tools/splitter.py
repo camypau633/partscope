@@ -209,13 +209,20 @@ def find_article_id(row, known_ids):
     return ""
 
 
-def load_specs(db, folder, article_to_sku):
-    """Import only attribute rows that expose a real textual criterion label.
+def load_attribute_dictionary(folder):
+    """Read the actual TecDoc items_atributes lookup table (ID -> localized text)."""
+    result = {}
+    for row in all_rows(folder, "items_atributes.csv"):
+        if len(row) >= 2 and row[0]:
+            text = next((value for value in row[1:] if value and TEXT_RE.search(value)), "")
+            if text:
+                result[row[0]] = text.strip()
+    return result
 
-    Some dump releases contain internal criterion IDs without their dictionary
-    in the selected files. Such rows are deliberately skipped rather than
-    inventing labels like 'length' or assigning a value to the wrong property.
-    """
+
+def load_specs(db, folder, article_to_sku):
+    """Resolve dimension labels/values through the actual item-attribute dictionary."""
+    dictionary = load_attribute_dictionary(folder)
     count = 0
     for filename in ("article_attributes.csv", "article_informations.csv"):
         path = folder / filename
@@ -227,21 +234,38 @@ def load_specs(db, folder, article_to_sku):
             if not article_id:
                 continue
             sku = article_to_sku[article_id]
-            # Use only an explicit human-readable dimension criterion and its
-            # adjacent non-empty value. Internal numeric criterion IDs alone
-            # are not translated or guessed.
-            for index, token in enumerate(row):
-                if not DIMENSION_RE.search(token or ""):
+            resolved = [(index, dictionary.get(token, token)) for index, token in enumerate(row)]
+            label_index = None
+            label = ""
+            for index, value in resolved:
+                if index < 1:
                     continue
-                value = next((x for x in row[index + 1:] if x and x != article_id), "")
-                if not value or value == token:
-                    continue
-                unit = ""
-                unit_match = re.search(r"\b(mm|cm|m|in|inch|°|bar|kg|g)\b", value, re.I)
-                if unit_match:
-                    unit = unit_match.group(1)
-                batch.append((sku, token.strip(), value.strip(), unit))
-                break
+                if DIMENSION_RE.search(value or "") and value != article_id:
+                    label_index, label = index, value.strip()
+                    break
+            if label_index is None:
+                # Some exports carry the label directly instead of an item ID.
+                for index, token in enumerate(row):
+                    if index > 0 and DIMENSION_RE.search(token or "") and token != article_id:
+                        label_index, label = index, token.strip()
+                        break
+            if label_index is None:
+                continue
+
+            raw_value = next(
+                (token for token in row[label_index + 1:] if token and token != article_id),
+                "",
+            )
+            if not raw_value:
+                continue
+            value = dictionary.get(raw_value, raw_value).strip()
+            if not value or value == label:
+                continue
+            unit = ""
+            unit_match = re.search(r"\\b(mm|cm|m|in|inch|°|bar|kg|g)\\b", value, re.I)
+            if unit_match:
+                unit = unit_match.group(1)
+            batch.append((sku, label, value, unit))
             if len(batch) >= 5000:
                 db.executemany("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)", batch)
                 count += len(batch)
