@@ -152,8 +152,9 @@ jobs:
             echo "::error::Numbered CSV chunks remain after merge."
             exit 1
           fi
-          python -m py_compile tools/splitter.py
-          echo "Selected TecDoc tables are ready."
+          python -m py_compile tools/splitter.py tools/test_splitter.py
+          python -m unittest discover -s tools -p 'test_*.py' -v
+          echo "Selected TecDoc tables and importer join tests are ready."
 
       - name: Inspect real TecDoc table layout
         run: |
