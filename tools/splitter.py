@@ -1,533 +1,445 @@
 #!/usr/bin/env python3
-# Compatible with Python 3.8.10 (including Windows 7 environments where supported).
+"""Build compact PartScope JSON shards from the selected TecDoc CSV tables.
 
+Raw TecDoc exports are headerless, tab-separated records. This importer uses
+known article/supplier positions, resolves image paths only against the
+1Q2019 Git tree manifest, and never fabricates image URLs. It also supports
+the earlier normalized CSV format as a fallback.
 """
-PartScope CSV -> sharded JSON exporter. Cloud workflow downloads the source archive; this script processes the extracted, normalized CSV tables.
-
-Expected input files (each may also be split into .000, .001, ... chunks):
-  parts.csv           brand, sku, name
-  analogs.csv         source_sku, brand, sku, name
-  compatibility.csv   sku, brand, model, years/year_from/year_to, engine
-  specifications.csv  sku, name, value, unit
-  diagrams.csv        sku, diagram_url
-
-Output example:
-  public/data/W7.json
-  {
-    "W7129": {
-      "sku": "W7129",
-      "brand": "...",
-      "name": "...",
-      "analogs": [],
-      "compatibility": [],
-      "specifications": [],
-      "diagramUrl": ""
-    }
-  }
-
-The CSV files must already be mapped to these logical relationships. A raw
-relational TecDoc dump with internal article/vehicle IDs needs a separate
-mapping/join step first. This script does not download archives or guess undocumented ID relations. The cloud workflow must fetch and extract an archive containing these normalized CSV tables first.
-
-Uses only Python standard-library modules and a temporary SQLite database.
-It streams CSV input and exports one shard at a time instead of keeping the
-whole catalogue in RAM.
-"""
-
 import argparse
 import csv
 import json
-import os
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import quote
 
-
-# Configure this only after verifying the real drawing CDN URL pattern.
-# Example: "https://your-real-cdn.example/drawings/{id}.jpg"
-# Empty by default so the exporter never invents image URLs.
-DRAWING_CDN_URL = os.environ.get("DRAWING_CDN_URL", "").strip()
-
-FIELD_ALIASES = {
-    "sku": (
-        "sku", "article_number", "art_article_nr", "part_number",
-        "partnumber", "article", "oem", "number", "artnr",
-        "article_no", "article_nr", "oem_number",
-    ),
-    "source_sku": (
-        "source_sku", "source_article", "original_sku", "base_sku",
-        "from_sku", "parent_sku", "main_article_number",
-    ),
-    "brand": (
-        "brand", "manufacturer", "manufacturer_name", "supplier_brand",
-        "make", "brand_name", "mfr",
-    ),
-    "name": (
-        "name", "part_name", "description", "article_name", "des_text",
-        "title", "label",
-    ),
-    "model": ("model", "vehicle_model", "model_name"),
-    "years": ("years", "year_range", "production_years"),
-    "year_from": ("year_from", "yearfrom", "year_start", "production_from"),
-    "year_to": ("year_to", "yearto", "year_end", "production_to"),
-    "year": ("year", "model_year"),
-    "engine": ("engine", "engine_code", "motor", "engine_type"),
-    "value": ("value", "spec_value", "attribute_value", "content", "criteria_value", "crit_value", "text_value"),
-    "drawing_id": ("drawing_id", "graphic_id", "media_id", "picture_id", "image_id", "gd_id", "doc_id"),
-    "criterion": ("criterion", "criterion_name", "criteria_name", "crit_name", "attribute_name", "property_name", "key", "label"),
-    "unit": ("unit", "unit_name", "measurement_unit"),
-    "diagram_url": ("diagram_url", "image_url", "image", "media_url", "url", "graphic_url", "picture_url"),
-}
-
-
-def clean_header(value):
-    return re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower()).strip("_")
+TEXT_RE = re.compile(r"[A-Za-zА-Яа-яЁё]")
+DIMENSION_RE = re.compile(
+    r"длин|диаметр|резьб|ширин|высот|толщин|length|diameter|thread|width|height|thickness|"
+    r"outside.?diameter|inner.?diameter|pitch|размер|размеры",
+    re.IGNORECASE,
+)
+IMAGE_BASE = "https://raw.githubusercontent.com/tecdocSQL/tecdocdatabase1Q2019/main/"
 
 
 def clean_sku(value):
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
 
-def get_value(row, field):
-    for alias in FIELD_ALIASES[field]:
-        if alias in row and row[alias] is not None:
-            found = str(row[alias]).strip()
-            if found:
-                return found
-    return ""
+def split_line(line):
+    return next(csv.reader([line], delimiter="\t", quotechar='"'))
 
 
-def csv_files(input_dir, family):
-    aliases = {
-        "specifications": ("specifications", "article_criteria", "criteria"),
-        "diagrams": ("diagrams", "graphics", "article_graphics", "article_images"),
-    }.get(family, (family,))
-    prefixes = tuple(alias + ".csv" for alias in aliases)
-    files = [
-        path for path in input_dir.iterdir()
-        if path.is_file() and any(
-            path.name.lower() == prefix
-            or path.name.lower().startswith(prefix + ".")
-            for prefix in prefixes
-        )
-    ]
-
-    def sort_key(path):
-        match = re.search(r"\.(\d+)$", path.name)
-        if match:
-            return (0, int(match.group(1)))
-        return (1, path.name.lower())
-
-    return sorted(files, key=sort_key)
+def read_tsv(path):
+    if not path or not path.exists():
+        return
+    with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as stream:
+        for line in stream:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            try:
+                yield [value.strip() for value in split_line(line)]
+            except csv.Error:
+                continue
 
 
-def rows_from_csv(path):
-    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+def first_existing(folder, name):
+    path = folder / name
+    return path if path.is_file() else None
+
+
+def all_rows(folder, name):
+    path = first_existing(folder, name)
+    if path:
+        yield from read_tsv(path)
+
+
+def normalize_header(value):
+    return re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower()).strip("_")
+
+
+def normalized_rows(path):
+    with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as stream:
         sample = stream.read(8192)
         stream.seek(0)
         try:
             dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
         except csv.Error:
             dialect = csv.excel
-
         reader = csv.DictReader(stream, dialect=dialect)
         if not reader.fieldnames:
-            print("[WARN] CSV has no header row: {}".format(path), file=sys.stderr)
             return
-
-        reader.fieldnames = [clean_header(name) for name in reader.fieldnames]
-        for raw in reader:
-            yield {
-                clean_header(key): (value or "").strip()
-                for key, value in raw.items()
-                if key is not None
-            }
+        reader.fieldnames = [normalize_header(x) for x in reader.fieldnames]
+        for row in reader:
+            yield {normalize_header(k): (v or "").strip() for k, v in row.items() if k}
 
 
-def create_schema(db):
+def pick(row, *names):
+    for name in names:
+        value = row.get(name, "")
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def load_image_manifest(path):
+    found = set()
+    if not path.exists():
+        return found
+    with path.open("r", encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            item = line.strip().replace("\\", "/")
+            if item.startswith("images/") and not item.endswith("/"):
+                found.add(item)
+    return found
+
+
+def create_db(db):
     db.executescript("""
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-
-        CREATE TABLE parts (
-          sku TEXT PRIMARY KEY,
-          brand TEXT NOT NULL DEFAULT '',
+        PRAGMA journal_mode=WAL;
+        PRAGMA synchronous=NORMAL;
+        CREATE TABLE parts(
+          sku TEXT PRIMARY KEY, article_id TEXT NOT NULL DEFAULT '',
+          supplier_id TEXT NOT NULL DEFAULT '', brand TEXT NOT NULL DEFAULT '',
           name TEXT NOT NULL DEFAULT ''
         );
-
-        CREATE TABLE analogs (
-          source_sku TEXT NOT NULL,
-          brand TEXT NOT NULL DEFAULT '',
-          sku TEXT NOT NULL,
-          name TEXT NOT NULL DEFAULT '',
-          UNIQUE(source_sku, sku, brand, name)
+        CREATE INDEX idx_parts_article_id ON parts(article_id);
+        CREATE TABLE specs(
+          sku TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL,
+          unit TEXT NOT NULL DEFAULT '', UNIQUE(sku,name,value,unit)
         );
-
-        CREATE TABLE compatibility (
-          sku TEXT NOT NULL,
-          brand TEXT NOT NULL DEFAULT '',
-          model TEXT NOT NULL DEFAULT '',
-          years TEXT NOT NULL DEFAULT '',
+        CREATE TABLE drawings(
+          sku TEXT NOT NULL, url TEXT NOT NULL, UNIQUE(sku,url)
+        );
+        CREATE TABLE analogues(
+          source_sku TEXT NOT NULL, sku TEXT NOT NULL,
+          UNIQUE(source_sku,sku)
+        );
+        CREATE TABLE compatibility(
+          sku TEXT NOT NULL, brand TEXT NOT NULL DEFAULT '',
+          model TEXT NOT NULL DEFAULT '', years TEXT NOT NULL DEFAULT '',
           engine TEXT NOT NULL DEFAULT '',
-          UNIQUE(sku, brand, model, years, engine)
+          UNIQUE(sku,brand,model,years,engine)
         );
-
-        CREATE TABLE specifications (
-          sku TEXT NOT NULL,
-          name TEXT NOT NULL,
-          value TEXT NOT NULL,
-          unit TEXT NOT NULL DEFAULT '',
-          UNIQUE(sku, name, value, unit)
-        );
-
-        CREATE TABLE diagrams (
-          sku TEXT NOT NULL,
-          diagram_url TEXT NOT NULL DEFAULT '',
-          drawing_id TEXT NOT NULL DEFAULT '',
-          UNIQUE(sku, diagram_url, drawing_id)
-        );
-
-        CREATE INDEX idx_analogs_source ON analogs(source_sku);
-        CREATE INDEX idx_compatibility_sku ON compatibility(sku);
-        CREATE INDEX idx_specifications_sku ON specifications(sku);
-        CREATE INDEX idx_parts_prefix ON parts(substr(sku, 1, 2));
     """)
 
 
-def insert_batch(db, family, batch):
-    if family == "parts":
+def load_articles(db, folder, suppliers_by_id, source_label):
+    path = folder / "articles.csv"
+    if not path.exists():
+        print("[WARN] Missing " + str(path), file=sys.stderr)
+        return 0
+    count = 0
+    batch = []
+    # TecDoc article rows in these exports are tab-separated and headerless:
+    # article ID, article number, supplier ID, generic-article ID, description...
+    for row in read_tsv(path):
+        if len(row) < 5:
+            continue
+        article_id, number, supplier_id, _generic_id, name = row[:5]
+        sku = clean_sku(number)
+        if not sku:
+            continue
+        brand = suppliers_by_id.get(supplier_id, "")
+        batch.append((sku, article_id, supplier_id, brand, name))
+        if len(batch) >= 5000:
+            db.executemany("""
+                INSERT INTO parts(sku,article_id,supplier_id,brand,name)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(sku) DO UPDATE SET
+                  article_id=CASE WHEN excluded.article_id='' THEN parts.article_id ELSE excluded.article_id END,
+                  supplier_id=CASE WHEN excluded.supplier_id='' THEN parts.supplier_id ELSE excluded.supplier_id END,
+                  brand=CASE WHEN excluded.brand='' THEN parts.brand ELSE excluded.brand END,
+                  name=CASE WHEN excluded.name='' THEN parts.name ELSE excluded.name END
+            """, batch)
+            count += len(batch)
+            batch = []
+    if batch:
         db.executemany("""
-            INSERT INTO parts(sku, brand, name) VALUES(?,?,?)
+            INSERT INTO parts(sku,article_id,supplier_id,brand,name)
+            VALUES(?,?,?,?,?)
             ON CONFLICT(sku) DO UPDATE SET
+              article_id=CASE WHEN excluded.article_id='' THEN parts.article_id ELSE excluded.article_id END,
+              supplier_id=CASE WHEN excluded.supplier_id='' THEN parts.supplier_id ELSE excluded.supplier_id END,
               brand=CASE WHEN excluded.brand='' THEN parts.brand ELSE excluded.brand END,
               name=CASE WHEN excluded.name='' THEN parts.name ELSE excluded.name END
         """, batch)
-
-    elif family == "analogs":
-        db.executemany("""
-            INSERT OR IGNORE INTO analogs(source_sku, brand, sku, name)
-            VALUES(?,?,?,?)
-        """, batch)
-
-    elif family == "compatibility":
-        db.executemany("""
-            INSERT OR IGNORE INTO compatibility(sku, brand, model, years, engine)
-            VALUES(?,?,?,?,?)
-        """, batch)
-
-    elif family == "specifications":
-        db.executemany("""
-            INSERT OR IGNORE INTO specifications(sku, name, value, unit)
-            VALUES(?,?,?,?)
-        """, batch)
-
-    elif family == "diagrams":
-        db.executemany("""
-            INSERT OR IGNORE INTO diagrams(sku, diagram_url, drawing_id)
-            VALUES(?,?,?)
-        """, batch)
+        count += len(batch)
+    db.commit()
+    print("[INFO] Articles from {}: {:,}".format(source_label, count))
+    return count
 
 
-def import_family(db, input_dir, family):
-    files = csv_files(input_dir, family)
-    if not files:
-        print("[INFO] No {}.csv found; skipping.".format(family))
-        return 0
+def load_suppliers(folder):
+    """TecDoc supplier records are headerless; resolve IDs to visible brand text."""
+    result = {}
+    for row in all_rows(folder, "suppliers.csv"):
+        if len(row) < 4:
+            continue
+        candidates = [row[3], row[-1]]
+        brand = next((x for x in candidates if x and TEXT_RE.search(x)), "")
+        if not brand:
+            continue
+        # TecDoc releases differ in the order of supplier identifiers. Index all
+        # short numeric identifier columns; article rows resolve by exact ID.
+        for token in row[:4]:
+            if token.isdigit():
+                result.setdefault(token, brand)
+    return result
 
-    total = 0
-    for path in files:
-        print("[READ] {}".format(path.name))
+
+def find_article_id(row, known_ids):
+    # IDs are exact tokens only. Never infer an article from a substring.
+    for token in row[:5]:
+        if token in known_ids:
+            return token
+    return ""
+
+
+def load_specs(db, folder, article_to_sku):
+    """Import only attribute rows that expose a real textual criterion label.
+
+    Some dump releases contain internal criterion IDs without their dictionary
+    in the selected files. Such rows are deliberately skipped rather than
+    inventing labels like 'length' or assigning a value to the wrong property.
+    """
+    count = 0
+    for filename in ("article_attributes.csv", "article_informations.csv"):
+        path = folder / filename
+        if not path.exists():
+            continue
         batch = []
-
-        for row in rows_from_csv(path):
-            if family == "parts":
-                sku = clean_sku(get_value(row, "sku"))
-                if not sku:
+        for row in read_tsv(path):
+            article_id = find_article_id(row, article_to_sku)
+            if not article_id:
+                continue
+            sku = article_to_sku[article_id]
+            # Use only an explicit human-readable dimension criterion and its
+            # adjacent non-empty value. Internal numeric criterion IDs alone
+            # are not translated or guessed.
+            for index, token in enumerate(row):
+                if not DIMENSION_RE.search(token or ""):
                     continue
-                batch.append((sku, get_value(row, "brand"), get_value(row, "name")))
-
-            elif family == "analogs":
-                source_sku = clean_sku(get_value(row, "source_sku"))
-                sku = clean_sku(get_value(row, "sku"))
-                if not source_sku or not sku or source_sku == sku:
+                value = next((x for x in row[index + 1:] if x and x != article_id), "")
+                if not value or value == token:
                     continue
-                batch.append((
-                    source_sku, get_value(row, "brand"),
-                    sku, get_value(row, "name"),
-                ))
-
-            elif family == "compatibility":
-                sku = clean_sku(get_value(row, "sku"))
-                brand = get_value(row, "brand")
-                model = get_value(row, "model")
-                if not sku or not (brand or model):
-                    continue
-
-                years = get_value(row, "years") or get_value(row, "year")
-                year_from = get_value(row, "year_from")
-                year_to = get_value(row, "year_to")
-                if not years and (year_from or year_to):
-                    years = "{}–{}".format(year_from, year_to).strip("–")
-
-                batch.append((
-                    sku, brand, model, years, get_value(row, "engine"),
-                ))
-
-            elif family == "specifications":
-                sku = clean_sku(get_value(row, "sku"))
-                name = get_value(row, "criterion") or get_value(row, "name")
-                value = get_value(row, "value")
-                if not sku or not name or not value:
-                    continue
-                batch.append((sku, name, value, get_value(row, "unit")))
-
-            elif family == "diagrams":
-                sku = clean_sku(get_value(row, "sku"))
-                url = get_value(row, "diagram_url")
-                drawing_id = get_value(row, "drawing_id")
-                if not url and drawing_id and DRAWING_CDN_URL and "{id}" in DRAWING_CDN_URL:
-                    url = DRAWING_CDN_URL.format(id=drawing_id)
-                if not sku or not (url or drawing_id):
-                    continue
-                batch.append((sku, url, drawing_id))
-
+                unit = ""
+                unit_match = re.search(r"\b(mm|cm|m|in|inch|°|bar|kg|g)\b", value, re.I)
+                if unit_match:
+                    unit = unit_match.group(1)
+                batch.append((sku, token.strip(), value.strip(), unit))
+                break
             if len(batch) >= 5000:
-                insert_batch(db, family, batch)
-                total += len(batch)
+                db.executemany("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)", batch)
+                count += len(batch)
                 batch = []
-
         if batch:
-            insert_batch(db, family, batch)
-            total += len(batch)
-
+            db.executemany("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)", batch)
+            count += len(batch)
         db.commit()
-
-    print("[INFO] {}: imported {:,} valid rows.".format(family, total))
-    return total
+    print("[INFO] Dimension-labelled attribute rows imported: {:,}".format(count))
 
 
-def build_part_record(db, sku, brand, name):
-    analogs = [
-        {"brand": analog_brand, "sku": analog_sku, "name": analog_name}
-        for analog_brand, analog_sku, analog_name in db.execute(
-            """
-            SELECT brand, sku, name FROM analogs
-            WHERE source_sku=? ORDER BY sku LIMIT 500
-            """,
-            (sku,),
-        )
-    ]
-
-    compatibility = [
-        {
-            "brand": vehicle_brand,
-            "model": model,
-            "years": years,
-            "engine": engine,
-        }
-        for vehicle_brand, model, years, engine in db.execute(
-            """
-            SELECT brand, model, years, engine FROM compatibility
-            WHERE sku=? LIMIT 2000
-            """,
-            (sku,),
-        )
-    ]
-
-    specifications = [
-        {
-            "key": spec_name,
-            "label": spec_name,
-            "value": spec_value,
-            **({"unit": unit} if unit else {}),
-        }
-        for spec_name, spec_value, unit in db.execute(
-            """
-            SELECT name, value, unit FROM specifications
-            WHERE sku=? LIMIT 1000
-            """,
-            (sku,),
-        )
-    ]
-
-    specs_object = {
-        spec_name: spec_value
-        for spec_name, spec_value, _unit in db.execute(
-            "SELECT name, value, unit FROM specifications WHERE sku=? ORDER BY rowid",
-            (sku,),
-        )
-    }
-
-    technical_drawings = []
-    for drawing_url, drawing_id in db.execute(
-        "SELECT diagram_url, drawing_id FROM diagrams WHERE sku=? ORDER BY rowid",
-        (sku,),
-    ):
-        resolved_url = drawing_url
-        if not resolved_url and drawing_id and DRAWING_CDN_URL and "{id}" in DRAWING_CDN_URL:
-            resolved_url = DRAWING_CDN_URL.format(id=drawing_id)
-        if resolved_url and resolved_url not in technical_drawings:
-            technical_drawings.append(resolved_url)
-
-    diagram_url = technical_drawings[0] if technical_drawings else ""
-
-    return {
-        "sku": sku,
-        "brand": brand,
-        "name": name,
-        "specs": specs_object,
-        "technical_drawings": technical_drawings,
-        "analogs": analogs,
-        "analogues": analogs,
-        "compatibility": compatibility,
-        "specifications": specifications,
-        "diagramUrl": diagram_url,
-        "diagram": {
-            "diagramUrl": diagram_url,
-            "imageUrl": diagram_url,
-            "specifications": specifications,
-            "hotspots": [],
-        },
-    }
+def load_drawings(db, folder, article_to_sku, image_paths):
+    path = folder / "article_mediainformation.csv"
+    if not path.exists():
+        print("[WARN] article_mediainformation.csv missing; no drawings imported")
+        return 0
+    # Build a basename index from the Git tree metadata; no image files are fetched.
+    by_basename = {}
+    for image_path in image_paths:
+        by_basename.setdefault(Path(image_path).name.lower(), image_path)
+    count = 0
+    batch = []
+    for row in read_tsv(path):
+        article_id = find_article_id(row, article_to_sku)
+        if not article_id:
+            continue
+        sku = article_to_sku[article_id]
+        for token in row:
+            candidate = token.replace("\\", "/").strip()
+            basename = Path(candidate).name.lower()
+            actual_path = by_basename.get(basename)
+            if actual_path:
+                url = IMAGE_BASE + quote(actual_path, safe="/")
+                batch.append((sku, url))
+                break
+        if len(batch) >= 5000:
+            db.executemany("INSERT OR IGNORE INTO drawings(sku,url) VALUES(?,?)", batch)
+            count += len(batch)
+            batch = []
+    if batch:
+        db.executemany("INSERT OR IGNORE INTO drawings(sku,url) VALUES(?,?)", batch)
+        count += len(batch)
+    db.commit()
+    print("[INFO] Verified drawing links imported: {:,}".format(count))
+    return count
 
 
-def shard_prefix(sku):
-    return sku[:2]
+def load_crosses(db, folder, sku_by_article):
+    """Import cross references only when a target SKU is actually present in articles."""
+    path = folder / "article_cross_list.csv"
+    if not path.exists():
+        print("[INFO] article_cross_list.csv not present; analogues remain empty")
+        return 0
+    count = 0
+    batch = []
+    known_skus = {row[0] for row in db.execute("SELECT sku FROM parts")}
+    for row in read_tsv(path):
+        if len(row) < 3:
+            continue
+        source_id = next((x for x in row[:4] if x in sku_by_article), "")
+        if not source_id:
+            continue
+        source_sku = sku_by_article[source_id]
+        for token in row:
+            candidate = clean_sku(token)
+            if candidate in known_skus and candidate != source_sku:
+                batch.append((source_sku, candidate))
+        if len(batch) >= 5000:
+            db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
+            count += len(batch)
+            batch = []
+    if batch:
+        db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
+        count += len(batch)
+    db.commit()
+    return count
 
 
-def export_shards(db, output_dir, limit):
+def import_normalized(db, input_dir):
+    """Compatibility fallback for a prepared CSV set."""
+    parts = input_dir / "parts.csv"
+    if not parts.exists():
+        return False
+    for row in normalized_rows(parts):
+        sku = clean_sku(pick(row, "sku", "article_number", "part_number", "article"))
+        if sku:
+            db.execute("INSERT OR REPLACE INTO parts(sku,brand,name) VALUES(?,?,?)",
+                       (sku, pick(row, "brand", "manufacturer"), pick(row, "name", "description")))
+    for filename in ("specifications.csv", "article_criteria.csv", "criteria.csv"):
+        path = input_dir / filename
+        if path.exists():
+            for row in normalized_rows(path):
+                sku = clean_sku(pick(row, "sku", "article_number", "part_number"))
+                name = pick(row, "name", "criterion", "attribute_name", "label")
+                value = pick(row, "value", "spec_value", "criteria_value")
+                if sku and name and value:
+                    db.execute("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)",
+                               (sku, name, value, pick(row, "unit")))
+    for filename in ("diagrams.csv", "graphics.csv", "article_graphics.csv", "article_images.csv"):
+        path = input_dir / filename
+        if path.exists():
+            for row in normalized_rows(path):
+                sku = clean_sku(pick(row, "sku", "article_number", "part_number"))
+                url = pick(row, "diagram_url", "image_url", "url")
+                if sku and url.startswith(("https://", "http://")):
+                    db.execute("INSERT OR IGNORE INTO drawings(sku,url) VALUES(?,?)", (sku,url))
+    db.commit()
+    return True
+
+
+def export_shards(db, output_dir, limit=None):
     output_dir.mkdir(parents=True, exist_ok=True)
-    prefixes = [
-        row[0] for row in db.execute(
-            "SELECT DISTINCT substr(sku, 1, 2) FROM parts ORDER BY 1"
-        )
-    ]
-
+    prefixes = [row[0] for row in db.execute("SELECT DISTINCT substr(sku,1,2) FROM parts ORDER BY 1")]
     exported = 0
-    shard_count = 0
-
     for prefix in prefixes:
         destination = output_dir / (prefix + ".json")
         temporary = destination.with_suffix(".json.tmp")
-        shard_written = 0
-
+        first = True
+        count = 0
         with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-            stream.write("{\n")
-            first = True
-
-            for sku, brand, name in db.execute(
-                """
-                SELECT sku, brand, name FROM parts
-                WHERE substr(sku, 1, 2)=?
-                ORDER BY sku
-                """,
-                (prefix,),
-            ):
-                record = build_part_record(db, sku, brand, name)
+            stream.write("{")
+            for (sku, brand, name) in db.execute(
+                    "SELECT sku,brand,name FROM parts WHERE substr(sku,1,2)=? ORDER BY sku", (prefix,)):
+                specs = {}
+                for spec_name, value, unit in db.execute(
+                        "SELECT name,value,unit FROM specs WHERE sku=? ORDER BY rowid", (sku,)):
+                    specs[spec_name] = value + ((" " + unit) if unit and unit.lower() not in value.lower() else "")
+                drawings = [r[0] for r in db.execute(
+                    "SELECT url FROM drawings WHERE sku=? ORDER BY rowid", (sku,))]
+                analogues = [{"sku": r[0]} for r in db.execute(
+                    "SELECT sku FROM analogues WHERE source_sku=? ORDER BY sku LIMIT 500", (sku,))]
+                compatibility = [{"brand": r[0], "model": r[1], "years": r[2], "engine": r[3]}
+                                  for r in db.execute(
+                    "SELECT brand,model,years,engine FROM compatibility WHERE sku=? LIMIT 2000", (sku,))]
+                record = {
+                    "sku": sku,
+                    "brand": brand or "",
+                    "name": name or "",
+                    "specs": specs,
+                    "technical_drawings": drawings,
+                    "analogues": analogues,
+                    "compatibility": compatibility,
+                }
                 if not first:
-                    stream.write(",\n")
-                stream.write(json.dumps(sku, ensure_ascii=False))
-                stream.write(":")
-                stream.write(json.dumps(
-                    record,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ))
+                    stream.write(",")
+                stream.write(json.dumps(sku, ensure_ascii=False) + ":" +
+                             json.dumps(record, ensure_ascii=False, separators=(",", ":")))
                 first = False
-                shard_written += 1
+                count += 1
                 exported += 1
-
                 if limit is not None and exported >= limit:
                     break
-
-            stream.write("\n}\n")
-
+            stream.write("}")
         temporary.replace(destination)
-        shard_count += 1
-        print(
-            "[SHARD] {}.json: {:,} parts".format(prefix, shard_written)
-        )
-
+        print("[SHARD] {}.json: {:,} SKUs".format(prefix, count))
         if limit is not None and exported >= limit:
             break
-
-    return exported, shard_count
+    return exported, len(prefixes)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Stream automotive CSV tables into two-character JSON shards."
-    )
-    parser.add_argument(
-        "--input", type=Path, default=Path("csv"),
-        help="Input CSV directory (default: ./csv)",
-    )
-    parser.add_argument(
-        "--output", type=Path, default=Path("public/data"),
-        help="Output shard directory (default: ./public/data)",
-    )
-    parser.add_argument(
-        "--limit", type=int, default=None,
-        help="Optional maximum number of SKUs to export for a test",
-    )
-    parser.add_argument(
-        "--clean-output", action="store_true",
-        help="Delete existing *.json shard files before exporting",
-    )
+    parser = argparse.ArgumentParser(description="Stream TecDoc CSV data into PartScope SKU shards.")
+    parser.add_argument("--input", type=Path, default=Path("raw_data"))
+    parser.add_argument("--output", type=Path, default=Path("public/data"))
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--clean-output", action="store_true")
     args = parser.parse_args()
-
     input_dir = args.input.resolve()
     output_dir = args.output.resolve()
-
     if not input_dir.is_dir():
-        print("[ERROR] Input directory does not exist: {}".format(input_dir), file=sys.stderr)
+        print("[ERROR] Input directory does not exist: " + str(input_dir), file=sys.stderr)
         return 2
-    if args.limit is not None and args.limit < 1:
-        print("[ERROR] --limit must be >= 1", file=sys.stderr)
-        return 2
-
     if args.clean_output and output_dir.exists():
-        removed = 0
-        for path in output_dir.glob("*.json"):
-            path.unlink()
-            removed += 1
-        print("[INFO] Removed {:,} existing JSON files.".format(removed))
-
-    with tempfile.TemporaryDirectory(prefix="part-finder-split-") as temp_dir:
-        db_path = Path(temp_dir) / "staging.sqlite"
-        db = sqlite3.connect(str(db_path))
+        for item in output_dir.glob("*.json"):
+            item.unlink()
+    with tempfile.TemporaryDirectory(prefix="partscope-tecdoc-") as tmp:
+        db = sqlite3.connect(str(Path(tmp) / "catalogue.sqlite"))
         try:
-            create_schema(db)
-
-            for family in (
-                "parts", "analogs", "compatibility",
-                "specifications", "diagrams",
-            ):
-                import_family(db, input_dir, family)
-
-            part_count = db.execute(
-                "SELECT COUNT(*) FROM parts"
-            ).fetchone()[0]
-
-            if not part_count:
-                print(
-                    "[ERROR] No parts imported. Check parts.csv headers "
-                    "(brand, sku/article_number, name/description).",
-                    file=sys.stderr,
-                )
+            create_db(db)
+            if import_normalized(db, input_dir):
+                print("[INFO] Imported prepared/normalized CSV input.")
+            else:
+                text_dir = input_dir / "2Q2018"
+                graphics_dir = input_dir / "1Q2019"
+                if not text_dir.is_dir() or not graphics_dir.is_dir():
+                    print("[ERROR] Expected raw_data/2Q2018 and raw_data/1Q2019.", file=sys.stderr)
+                    return 2
+                suppliers = load_suppliers(text_dir)
+                load_articles(db, text_dir, suppliers, "2Q2018")
+                # Article IDs can differ between quarterly releases; load a second
+                # ID-to-SKU mapping and preserve the 2Q2018 text records.
+                load_articles(db, graphics_dir, load_suppliers(graphics_dir), "1Q2019")
+                article_to_sku = {article_id: sku for sku, article_id in db.execute(
+                    "SELECT sku,article_id FROM parts WHERE article_id<>''")}
+                load_specs(db, text_dir, article_to_sku)
+                image_manifest = load_image_manifest(graphics_dir / "images_manifest.txt")
+                load_drawings(db, graphics_dir, article_to_sku, image_manifest)
+                sku_by_article = article_to_sku
+                load_crosses(db, text_dir, sku_by_article)
+            count = db.execute("SELECT COUNT(*) FROM parts").fetchone()[0]
+            if not count:
+                print("[ERROR] No articles imported. Inspect the downloaded TecDoc CSV layout.", file=sys.stderr)
                 return 1
-
-            print("[INFO] Unique SKUs: {:,}".format(part_count))
+            print("[INFO] Unique SKUs: {:,}".format(count))
             exported, shard_count = export_shards(db, output_dir, args.limit)
-            print("[DONE] Exported {:,} SKU records into {} shard files.".format(
-                exported, shard_count
-            ))
-            print("[NOTE] Shards were written to {}.".format(output_dir))
-            print("[NOTE] This only reduces the number of files; large shards "
-                  "can still exceed GitHub file-size or repository-size limits.")
+            print("[DONE] Exported {:,} records.".format(exported))
             return 0
         finally:
             db.close()
