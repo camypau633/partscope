@@ -421,7 +421,7 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
         temporary = destination.with_suffix(".json.tmp")
         first = True
         count = 0
-        with temporary.open("w", encoding="utf-8", newline="\\n") as stream:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write("{")
             if selected is not None:
                 part_rows = selected[prefix]
