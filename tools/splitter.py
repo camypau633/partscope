@@ -426,15 +426,66 @@ def export_shards(db, output_dir, limit=None):
     return exported, len(prefixes)
 
 
+
+def inspect_raw_layout(input_dir):
+    """Print a bounded structural report before relying on unverified TecDoc column positions."""
+    sources = [
+        (input_dir / "2Q2018", "articles.csv"),
+        (input_dir / "2Q2018", "suppliers.csv"),
+        (input_dir / "2Q2018", "article_attributes.csv"),
+        (input_dir / "2Q2018", "article_informations.csv"),
+        (input_dir / "2Q2018", "article_cross_list.csv"),
+        (input_dir / "2Q2018", "items_atributes.csv"),
+        (input_dir / "1Q2019", "articles.csv"),
+        (input_dir / "1Q2019", "suppliers.csv"),
+        (input_dir / "1Q2019", "article_mediainformation.csv"),
+    ]
+    found = 0
+    for folder, filename in sources:
+        path = folder / filename
+        if not path.is_file():
+            print("[LAYOUT] MISSING {} (optional or not downloaded)".format(path))
+            continue
+        found += 1
+        samples = []
+        widths = {}
+        try:
+            for index, row in enumerate(read_tsv(path)):
+                width = len(row)
+                widths[width] = widths.get(width, 0) + 1
+                if len(samples) < 3:
+                    samples.append([value[:100] for value in row[:12]])
+                if index >= 199:
+                    break
+        except OSError as exc:
+            print("[LAYOUT] ERROR {}: {}".format(path, exc))
+            continue
+        print("[LAYOUT] FILE {}".format(path))
+        print("[LAYOUT] ROW_WIDTHS_IN_FIRST_200 {}".format(
+            ", ".join("{} fields:{}".format(width, count) for width, count in sorted(widths.items()))
+        ))
+        for index, row in enumerate(samples, 1):
+            print("[LAYOUT] SAMPLE {} {}".format(index, json.dumps(row, ensure_ascii=False)))
+    print("[LAYOUT] Files inspected: {}".format(found))
+    return 0 if found else 2
+
+
 def main():
     parser = argparse.ArgumentParser(description="Stream TecDoc CSV data into PartScope SKU shards.")
     parser.add_argument("--input", type=Path, default=Path("raw_data"))
     parser.add_argument("--output", type=Path, default=Path("public/data"))
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--clean-output", action="store_true")
+    parser.add_argument("--inspect-layout", action="store_true",
+                        help="Report actual raw TecDoc row shapes without generating catalogue data.")
     args = parser.parse_args()
     input_dir = args.input.resolve()
     output_dir = args.output.resolve()
+    if args.inspect_layout:
+        if not input_dir.is_dir():
+            print("[ERROR] Input directory does not exist: " + str(input_dir), file=sys.stderr)
+            return 2
+        return inspect_raw_layout(input_dir)
     if not input_dir.is_dir():
         print("[ERROR] Input directory does not exist: " + str(input_dir), file=sys.stderr)
         return 2
