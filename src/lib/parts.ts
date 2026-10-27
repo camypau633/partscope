@@ -27,7 +27,9 @@ export type PartData = {
 };
 
 export function sanitizeSku(input: string): string {
-  return input.replace(/[^0-9a-zA-Zа-яА-ЯёЁ]/g, "").toUpperCase();
+  // Keep meaningful article punctuation (e.g. W712.9); remove whitespace only.
+  // encodeURIComponent() safely encodes punctuation when building the raw URL.
+  return input.trim().replace(/\\s+/g, "").toUpperCase();
 }
 
 /**
@@ -72,32 +74,60 @@ function emptyRemoteRecord(sku: string): Raw {
  * Other failures try the next configured raw source before returning empty.
  */
 export async function fetchWithProxyRotation<T>(sku: string, rawBases = RAW_DATABASE_BASES): Promise<T> {
-  if (!rawBases.length) return emptyRemoteRecord(sku) as T;
+  const exactSku = sku.trim().replace(/\\s+/g, "").toUpperCase();
+  if (!rawBases.length) {
+    console.error(
+      "[Part Finder] No live parts database configured. Set VITE_PARTS_DATABASE_RAW_BASE and optionally VITE_PARTS_DATABASE_RAW_FALLBACKS."
+    );
+    return emptyRemoteRecord(exactSku) as T;
+  }
+
+  // Prefer the exact article spelling, then lowercase mirrors, then a
+  // punctuation-free fallback for repositories that normalize filenames.
+  const fileNames = [...new Set([
+    exactSku,
+    exactSku.toLowerCase(),
+    exactSku.replace(/[^0-9A-Z]/g, ""),
+    exactSku.toLowerCase().replace(/[^0-9a-z]/g, ""),
+  ])].filter(Boolean);
 
   for (const base of rawBases) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    try {
-      const url = `${base}/${encodeURIComponent(sku)}.json`;
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: { Accept: "application/json" },
-      });
+    for (const fileName of fileNames) {
+      const url = `${base}/${encodeURIComponent(fileName)}.json`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      try {
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+        });
 
-      if (response.status === 404) continue;
-      if (!response.ok) continue;
+        if (response.status === 404) {
+          console.info(`[Part Finder] Database record not found (404): ${url}`);
+          continue;
+        }
+        if (!response.ok) {
+          console.warn(`[Part Finder] Database request failed: ${response.status} ${response.statusText} — ${url}`);
+          continue;
+        }
 
-      const json = await response.json();
-      if (!json || typeof json !== "object" || Array.isArray(json)) continue;
-      return json as T;
-    } catch {
-      // Try the next configured GitHub Raw database.
-    } finally {
-      clearTimeout(timeout);
+        const json = await response.json();
+        if (!json || typeof json !== "object" || Array.isArray(json)) {
+          console.error(`[Part Finder] Invalid JSON record shape from ${url}; expected an object.`);
+          continue;
+        }
+        console.info(`[Part Finder] Loaded part record from ${url}`);
+        return json as T;
+      } catch (error) {
+        console.warn(`[Part Finder] Network/JSON error for ${url}:`, error);
+      } finally {
+        clearTimeout(timeout);
+      }
     }
   }
 
-  return emptyRemoteRecord(sku) as T;
+  console.warn(`[Part Finder] No record found in configured sources for SKU "${exactSku}".`);
+  return emptyRemoteRecord(exactSku) as T;
 }
 
 const str = (value: unknown) => (value == null ? "" : String(value));
