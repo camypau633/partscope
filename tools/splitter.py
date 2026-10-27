@@ -183,22 +183,57 @@ def load_articles(db, folder, suppliers_by_id, source_label, preserve_existing=F
     return article_map
 
 
-def load_suppliers(folder):
-    """TecDoc supplier records are headerless; resolve IDs to visible brand text."""
+def load_suppliers(folder, expected_supplier_ids=None):
+    """Resolve supplier IDs using measured overlap with articles.csv column 2.
+
+    Supplier exports contain several numeric IDs. Mapping every numeric field
+    to a brand creates false matches, so choose one column only when it has a
+    uniquely best overlap with article supplier IDs.
+    """
+    rows = [row for row in all_rows(folder, "suppliers.csv") if len(row) >= 4]
+    if not rows:
+        print("[WARN] No usable supplier rows in {}".format(folder))
+        return {}
+
+    expected = {str(value) for value in (expected_supplier_ids or set()) if str(value).isdigit()}
+    brand_index = 3
+    max_width = max(len(row) for row in rows)
+    scores = {}
+    for column in range(max_width):
+        scores[column] = sum(
+            1 for row in rows
+            if column < len(row) and row[column].isdigit() and row[column] in expected
+            and brand_index < len(row) and TEXT_RE.search(row[brand_index] or "")
+        )
+    best_score = max(scores.values(), default=0)
+    winners = [column for column, score in scores.items() if score == best_score and score > 0]
+    if len(winners) != 1:
+        print("[WARN] Supplier ID column is ambiguous in {} (best overlap: {}, columns: {}). Brands left blank.".format(
+            folder, best_score, winners
+        ))
+        return {}
+
+    key_index = winners[0]
     result = {}
-    for row in all_rows(folder, "suppliers.csv"):
-        if len(row) < 4:
+    for row in rows:
+        if key_index >= len(row):
             continue
-        candidates = [row[3], row[-1]]
-        brand = next((x for x in candidates if x and TEXT_RE.search(x)), "")
-        if not brand:
-            continue
-        # TecDoc releases differ in the order of supplier identifiers. Index all
-        # short numeric identifier columns; article rows resolve by exact ID.
-        for token in row[:4]:
-            if token.isdigit():
-                result.setdefault(token, brand)
+        key = row[key_index].strip()
+        brand = row[brand_index].strip() if brand_index < len(row) else ""
+        if key in expected and brand and TEXT_RE.search(brand):
+            result[key] = brand
+    print("[INFO] Supplier join in {}: column {}, matched {}/{} article supplier IDs".format(
+        folder, key_index, len(result), len(expected)
+    ))
     return result
+
+
+def article_supplier_ids(folder):
+    """Collect supplier IDs from the observed articles.csv field at index 2."""
+    return {
+        row[2] for row in all_rows(folder, "articles.csv")
+        if len(row) >= 3 and row[2].isdigit()
+    }
 
 
 def find_article_id(row, known_ids):
@@ -314,25 +349,29 @@ def load_drawings(db, folder, article_to_sku, image_paths):
 
 
 def load_crosses(db, folder, sku_by_article):
-    """Import cross references only when a target SKU is actually present in articles."""
+    """Import cross references only when both explicit article IDs resolve.
+
+    The observed raw rows have the shape: source article ID, target article ID,
+    external/reference number. Do not treat the third field as a PartScope SKU.
+    """
     path = folder / "article_cross_list.csv"
     if not path.exists():
         print("[INFO] article_cross_list.csv not present; analogues remain empty")
         return 0
     count = 0
     batch = []
-    known_skus = {row[0] for row in db.execute("SELECT sku FROM parts")}
     for row in read_tsv(path):
-        if len(row) < 3:
+        if len(row) < 2:
             continue
-        source_id = next((x for x in row[:4] if x in sku_by_article), "")
-        if not source_id:
+        source_id, target_id = row[0].strip(), row[1].strip()
+        if source_id not in sku_by_article or target_id not in sku_by_article:
             continue
         source_sku = sku_by_article[source_id]
-        for token in row:
-            candidate = clean_sku(token)
-            if candidate in known_skus and candidate != source_sku:
-                batch.append((source_sku, candidate))
+        target_sku = sku_by_article[target_id]
+        if not source_sku or not target_sku or source_sku == target_sku:
+            continue
+        batch.append((source_sku, target_sku))
+        batch.append((target_sku, source_sku))
         if len(batch) >= 5000:
             db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
             count += len(batch)
@@ -341,6 +380,7 @@ def load_crosses(db, folder, sku_by_article):
         db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
         count += len(batch)
     db.commit()
+    print("[INFO] Verified article-ID cross references imported: {:,}".format(count))
     return count
 
 
@@ -504,12 +544,12 @@ def main():
                 if not text_dir.is_dir() or not graphics_dir.is_dir():
                     print("[ERROR] Expected raw_data/2Q2018 and raw_data/1Q2019.", file=sys.stderr)
                     return 2
-                suppliers = load_suppliers(text_dir)
+                suppliers = load_suppliers(text_dir, article_supplier_ids(text_dir))
                 article_map_2q = load_articles(db, text_dir, suppliers, "2Q2018")
                 # Quarterly article IDs are not assumed to be stable. Use the
                 # 1Q2019 map for media, while retaining 2Q2018 article text.
                 article_map_1q = load_articles(
-                    db, graphics_dir, load_suppliers(graphics_dir), "1Q2019",
+                    db, graphics_dir, load_suppliers(graphics_dir, article_supplier_ids(graphics_dir)), "1Q2019",
                     preserve_existing=True,
                 )
                 load_specs(db, text_dir, article_map_2q)
