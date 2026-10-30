@@ -106,7 +106,8 @@ def create_db(db):
         CREATE TABLE parts(
           part_id TEXT PRIMARY KEY, sku TEXT NOT NULL,
           source_snapshot TEXT NOT NULL DEFAULT '', article_id TEXT NOT NULL DEFAULT '',
-          supplier_id TEXT NOT NULL DEFAULT '', brand TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT ''
+          supplier_id TEXT NOT NULL DEFAULT '', supplier_internal_id TEXT NOT NULL DEFAULT '',
+          brand TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX idx_parts_sku ON parts(sku);
         CREATE INDEX idx_parts_article_id ON parts(source_snapshot,article_id);
@@ -117,11 +118,21 @@ def create_db(db):
     """)
 
 
-def load_articles(db, folder, suppliers_by_id, source_label, preserve_existing=False):
+def load_supplier_internal_ids(folder):
+    """Map source supplier IDs to TecDoc supplier InternalID values."""
+    result = {}
+    for row in all_rows(folder, "suppliers.csv"):
+        if len(row) >= 3 and row[1].isdigit() and row[2].isdigit():
+            result[row[1].strip()] = row[2].strip()
+    return result
+
+
+def load_articles(db, folder, suppliers_by_id, source_label, supplier_internal_ids=None, preserve_existing=False):
     path = folder / "articles.csv"
     if not path.exists():
         print("[WARN] Missing " + str(path), file=sys.stderr)
         return {}
+    supplier_internal_ids = supplier_internal_ids or {}
     article_map = {}
     accepted = 0
     for row in read_tsv(path):
@@ -131,18 +142,22 @@ def load_articles(db, folder, suppliers_by_id, source_label, preserve_existing=F
         sku = clean_sku(number)
         if not sku or not article_id or not supplier_id:
             continue
-        # TecDoc article IDs are snapshot-local; SKU is deliberately non-unique.
-        part_id = source_label + ":" + article_id
+        # Keep manufacturer, snapshot-local article ID and normalized article
+        # number in the identity. SKU alone is never a primary key.
+        supplier_internal_id = supplier_internal_ids.get(supplier_id, "")
+        part_id = "{}:{}:{}:{}".format(source_label, supplier_id, article_id, sku)
         brand = suppliers_by_id.get(supplier_id, "")
         db.execute(
-            "INSERT OR IGNORE INTO parts(part_id,sku,source_snapshot,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?,?,?)",
-            (part_id, sku, source_label, article_id, supplier_id, brand, name),
+            """INSERT OR IGNORE INTO parts(
+                 part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id,brand,name
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            (part_id, sku, source_label, article_id, supplier_id, supplier_internal_id, brand, name),
         )
         if db.execute("SELECT changes()").fetchone()[0]:
             accepted += 1
         article_map[article_id] = part_id
     db.commit()
-    print("[INFO] Articles from {}: {:,} unique TecDoc article IDs".format(source_label, accepted))
+    print("[INFO] Articles from {}: {:,} unique manufacturer/article/SKU identities".format(source_label, accepted))
     return article_map
 
 
@@ -263,22 +278,273 @@ def load_specs(db, folder, article_to_part_id):
     return count
 
 
-def load_drawings(db, folder, article_to_sku, image_paths):
-    """Do not associate media with parts until an explicit relation is verified.
+def load_article_identity_index(folder, supplier_internal_ids):
+    """Map 1Q2019 article IDs to stable supplier InternalID + normalized SKU."""
+    result = {}
+    for row in all_rows(folder, "articles.csv"):
+        if len(row) < 3:
+            continue
+        article_id, number, supplier_id = row[0].strip(), row[1].strip(), row[2].strip()
+        supplier_internal_id = supplier_internal_ids.get(supplier_id, "")
+        sku = clean_sku(number)
+        if article_id and supplier_internal_id and sku:
+            result[article_id] = (supplier_internal_id, sku)
+    return result
 
-    The observed article_mediainformation rows contain media metadata and a
-    filename, but the sampled layout does not expose an article ID. Matching
-    an arbitrary numeric field to articles would create false diagram links.
+
+def resolve_snapshot_article_map(db, article_identity_index):
+    """Rebind 1Q2019 article IDs to unique 2Q2018 manufacturer/SKU records.
+
+    Quarterly article IDs are not assumed to be stable. A link is accepted
+    only when supplier InternalID + SKU resolves to exactly one 2Q2018 part.
     """
+    candidates = {}
+    for part_id, supplier_internal_id, sku in db.execute(
+        "SELECT part_id,supplier_internal_id,sku FROM parts WHERE source_snapshot='2Q2018'"
+    ):
+        if supplier_internal_id:
+            candidates.setdefault((supplier_internal_id, sku), []).append(part_id)
+    resolved = {}
+    ambiguous = 0
+    for article_id, identity in article_identity_index.items():
+        matches = candidates.get(identity, [])
+        if len(matches) == 1:
+            resolved[article_id] = matches[0]
+        elif len(matches) > 1:
+            ambiguous += 1
+    print("[MEDIA-AUDIT] 1Q2019 article IDs resolved to 2Q2018 parts: {:,}; ambiguous: {:,}".format(
+        len(resolved), ambiguous
+    ))
+    return resolved
+
+
+def sanitize_picture_name(value):
+    # The source images README documents replacing Windows-invalid filename
+    # characters with "==" before storing the image.
+    return re.sub(r'[ "\\\\/:*?|<>]', "==", str(value or "").strip())
+
+
+def resolve_image_path(supplier_id, supplier_internal_id, picture_name, image_paths):
+    picture = sanitize_picture_name(picture_name).replace("\\\\", "/").split("/")[-1]
+    if not picture:
+        return ""
+    prefix = picture[:2]
+    supplier_folders = {str(value) for value in (supplier_id, supplier_internal_id) if value}
+    expected = []
+    for supplier in supplier_folders:
+        expected.append("images/{}/{}/{}".format(supplier, prefix, picture))
+    for candidate in expected:
+        if candidate in image_paths:
+            return candidate
+    # Some exports use the supplier's alternate ID in the image directory.
+    matches = []
+    suffix = "/{}/{}".format(prefix, picture).lower()
+    for candidate in image_paths:
+        normalized = candidate.replace("\\\\", "/")
+        parts = normalized.split("/")
+        if normalized.lower().endswith(suffix) and len(parts) >= 4 and parts[-3] in supplier_folders:
+            matches.append(normalized)
+    return matches[0] if len(matches) == 1 else ""
+
+
+def load_drawings(db, folder, article_to_part_id, image_paths, supplier_internal_ids=None):
+    """Link 1Q2019 media through its real article_id field and source image tree."""
     path = folder / "article_mediainformation.csv"
     if not path.exists():
         print("[WARN] article_mediainformation.csv missing; no drawings imported")
         return 0
-    print("[INFO] Drawings skipped: article_mediainformation has no verified article-ID relation.")
-    print("[INFO] Image path manifest contains {} paths; filenames are not enough to link a part.".format(
-        len(image_paths)
+    supplier_internal_ids = supplier_internal_ids or {}
+    supplier_ids_by_internal = {value: key for key, value in supplier_internal_ids.items()}
+    count = missing_article = missing_image = 0
+    batch = []
+    for row in read_tsv(path):
+        # Schema from source db.sql: article_id is column 0; PictureName is col 8.
+        if len(row) < 9:
+            continue
+        article_id = row[0].strip()
+        part_id = article_to_part_id.get(article_id, "")
+        if not part_id:
+            missing_article += 1
+            continue
+        picture_name = row[8].strip()
+        if not picture_name:
+            continue
+        part = db.execute(
+            "SELECT supplier_id,supplier_internal_id FROM parts WHERE part_id=?", (part_id,)
+        ).fetchone()
+        if not part:
+            continue
+        image_path = resolve_image_path(part[0], part[1], picture_name, image_paths)
+        if not image_path:
+            missing_image += 1
+            continue
+        url = IMAGE_BASE + quote(image_path, safe="/")
+        batch.append((part_id, url))
+        if len(batch) >= 5000:
+            db.executemany("INSERT OR IGNORE INTO drawings(part_id,url) VALUES(?,?)", batch)
+            count += len(batch)
+            batch = []
+    if batch:
+        db.executemany("INSERT OR IGNORE INTO drawings(part_id,url) VALUES(?,?)", batch)
+        count += len(batch)
+    db.commit()
+    print("[MEDIA-AUDIT] drawings linked: {:,}; no 2Q2018 article match: {:,}; image absent from manifest: {:,}".format(
+        count, missing_article, missing_image
     ))
-    return 0
+    return count
+
+
+def load_vehicle_compatibility(db, folder, supplier_internal_ids):
+    """Join 2Q2018 article linkages to passenger cars and their engines.
+
+    Verified source query semantics:
+      articles_linkages.item_type=1 -> passengercars.InternalID
+      articles_linkages.item_type=3 -> engines.InternalID
+      articles_linkages.supplier -> suppliers.internalID
+      articles_linkages.article -> articles.DataSupplierArticleNumber
+      passengercars_link_engines.car_id -> passengercars.id
+      passengercars_link_engines.engine_id -> engines.id
+    """
+    required = ("articles_linkages.csv", "passengercars.csv", "models.csv",
+                "manufacturers.csv", "engines.csv", "passengercars_link_engines.csv")
+    missing = [name for name in required if not (folder / name).is_file()]
+    if missing:
+        print("[WARN] Vehicle compatibility skipped; missing tables: " + ", ".join(missing))
+        return 0
+
+    supplier_ids_by_internal = {}
+    for supplier_id, internal_id in supplier_internal_ids.items():
+        if internal_id:
+            supplier_ids_by_internal.setdefault(internal_id, []).append(supplier_id)
+
+    manufacturer_names = {}
+    for row in all_rows(folder, "manufacturers.csv"):
+        if len(row) >= 4 and row[0]:
+            manufacturer_names[row[0].strip()] = row[3].strip()
+
+    model_names = {}
+    for row in all_rows(folder, "models.csv"):
+        if len(row) >= 5 and row[0]:
+            model_names[(row[0].strip(), row[1].strip())] = row[4].strip()
+
+    engines_by_id = {}
+    engines_by_internal = {}
+    for row in all_rows(folder, "engines.csv"):
+        if len(row) < 6 or not row[0]:
+            continue
+        engine = {
+            "id": row[0].strip(),
+            "internal_id": row[1].strip(),
+            "name": (row[3].strip() or row[5].strip()),
+        }
+        engines_by_id[engine["id"]] = engine
+        if engine["internal_id"]:
+            engines_by_internal.setdefault(engine["internal_id"], []).append(engine)
+
+    car_engines = {}
+    engine_cars = {}
+    for row in all_rows(folder, "passengercars_link_engines.csv"):
+        if len(row) < 2 or not row[0] or not row[1]:
+            continue
+        car_engines.setdefault(row[0].strip(), set()).add(row[1].strip())
+        engine_cars.setdefault(row[1].strip(), set()).add(row[0].strip())
+
+    cars_by_internal = {}
+    cars_by_id = {}
+    for row in all_rows(folder, "passengercars.csv"):
+        if len(row) < 9 or not row[0]:
+            continue
+        car_id, internal_id, model_id = row[0].strip(), row[1].strip(), row[2].strip()
+        manufacturer_id = row[4].strip() if len(row) > 4 else ""
+        brand = manufacturer_names.get(manufacturer_id, row[3].strip() if len(row) > 3 else "")
+        model = model_names.get((model_id, manufacturer_id), "")
+        display = (row[8].strip() if len(row) > 8 else "") or (row[7].strip() if len(row) > 7 else "")
+        if not display:
+            display = model
+        vehicle = {
+            "id": car_id,
+            "internal_id": internal_id,
+            "brand": brand,
+            "model": display,
+            "years": "{}-{}".format(
+                (row[5].strip()[:4] if len(row) > 5 and row[5].strip() else ""),
+                (row[6].strip()[:4] if len(row) > 6 and row[6].strip() else ""),
+            ).strip("-"),
+        }
+        cars_by_id[car_id] = vehicle
+        if internal_id:
+            cars_by_internal.setdefault(internal_id, []).append(vehicle)
+
+    # Resolve each supplier/article pair to one exact internal part record.
+    parts_by_supplier_sku = {}
+    for part_id, supplier_internal_id, sku in db.execute(
+        "SELECT part_id,supplier_internal_id,sku FROM parts WHERE source_snapshot='2Q2018'"
+    ):
+        if supplier_internal_id:
+            parts_by_supplier_sku.setdefault((supplier_internal_id, sku), []).append(part_id)
+
+    total = imported = ambiguous = 0
+
+    def add_compatibility(part_id, vehicle, engine_name=""):
+        nonlocal imported
+        if not part_id:
+            return
+        cursor = db.execute(
+            """INSERT OR IGNORE INTO compatibility(part_id,brand,model,years,engine)
+               VALUES(?,?,?,?,?)""",
+            (part_id, vehicle["brand"], vehicle["model"], vehicle["years"], engine_name),
+        )
+        if cursor.rowcount > 0:
+            imported += 1
+
+    for row in all_rows(folder, "articles_linkages.csv"):
+        if len(row) < 5:
+            continue
+        total += 1
+        item_type, item_id = row[0].strip(), row[1].strip()
+        supplier_internal_id = row[3].strip()
+        sku = clean_sku(row[4])
+        if not item_id or not supplier_internal_id or not sku:
+            continue
+        supplier_matches = supplier_ids_by_internal.get(supplier_internal_id, [])
+        if len(supplier_matches) != 1:
+            continue
+        part_matches = parts_by_supplier_sku.get((supplier_internal_id, sku), [])
+        if len(part_matches) != 1:
+            if len(part_matches) > 1:
+                ambiguous += 1
+            continue
+        part_id = part_matches[0]
+
+        if item_type == "1":
+            vehicles = cars_by_internal.get(item_id, [])
+            for vehicle in vehicles:
+                linked_engine_ids = sorted(car_engines.get(vehicle["id"], set()))
+                engine_names = [
+                    engines_by_id[engine_id]["name"]
+                    for engine_id in linked_engine_ids
+                    if engine_id in engines_by_id and engines_by_id[engine_id]["name"]
+                ]
+                if engine_names:
+                    for engine_name in engine_names:
+                        add_compatibility(part_id, vehicle, engine_name)
+                else:
+                    add_compatibility(part_id, vehicle)
+        elif item_type == "3":
+            engine_matches = engines_by_internal.get(item_id, [])
+            if len(engine_matches) != 1:
+                continue
+            engine = engine_matches[0]
+            for car_id in sorted(engine_cars.get(engine["id"], set())):
+                vehicle = cars_by_id.get(car_id)
+                if vehicle:
+                    add_compatibility(part_id, vehicle, engine["name"])
+
+    db.commit()
+    print("[VEHICLE-AUDIT] article linkage rows: {:,}; vehicle/engine matches: {:,}; ambiguous part matches: {:,}".format(
+        total, imported, ambiguous
+    ))
+    return imported
 
 
 def load_crosses(db, folder, part_id_by_article):
@@ -338,10 +604,14 @@ def import_normalized(db, input_dir):
             continue
         article_id = pick(row, "article_id", "id") or str(index)
         source = pick(row, "source_snapshot", "source") or "normalized"
-        part_id = source + ":" + article_id
-        db.execute("INSERT OR IGNORE INTO parts(part_id,sku,source_snapshot,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?,?,?)",
-                   (part_id, sku, source, article_id, pick(row, "supplier_id"), pick(row, "brand", "manufacturer"),
-                    pick(row, "name", "description")))
+        supplier_id = pick(row, "supplier_id")
+        supplier_internal_id = pick(row, "supplier_internal_id", "supplier_id")
+        part_id = "{}:{}:{}:{}".format(source, supplier_id, article_id, sku)
+        db.execute("""INSERT OR IGNORE INTO parts(
+                   part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id,brand,name
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                   (part_id, sku, source, article_id, supplier_id, supplier_internal_id,
+                    pick(row, "brand", "manufacturer"), pick(row, "name", "description")))
         sku_to_part.setdefault(sku, part_id)
     for filename in ("specifications.csv", "article_criteria.csv", "criteria.csv"):
         path = input_dir / filename
@@ -421,6 +691,12 @@ def inspect_raw_layout(input_dir):
         (input_dir / "2Q2018", "article_attributes.csv"),
         (input_dir / "2Q2018", "article_informations.csv"),
         (input_dir / "2Q2018", "article_cross_list.csv"),
+        (input_dir / "2Q2018", "articles_linkages.csv"),
+        (input_dir / "2Q2018", "passengercars.csv"),
+        (input_dir / "2Q2018", "models.csv"),
+        (input_dir / "2Q2018", "manufacturers.csv"),
+        (input_dir / "2Q2018", "engines.csv"),
+        (input_dir / "2Q2018", "passengercars_link_engines.csv"),
         (input_dir / "2Q2018", "items_atributes.csv"),
         (input_dir / "1Q2019", "articles.csv"),
         (input_dir / "1Q2019", "suppliers.csv"),
@@ -493,16 +769,23 @@ def main():
                     print("[ERROR] Expected raw_data/2Q2018 and raw_data/1Q2019.", file=sys.stderr)
                     return 2
                 suppliers = load_suppliers(text_dir, article_supplier_ids(text_dir))
-                article_map_2q = load_articles(db, text_dir, suppliers, "2Q2018")
-                # Quarterly article IDs are not assumed to be stable. Use the
-                # 1Q2019 map for media, while retaining 2Q2018 article text.
-                article_map_1q = load_articles(
-                    db, graphics_dir, load_suppliers(graphics_dir, article_supplier_ids(graphics_dir)), "1Q2019",
-                    preserve_existing=True,
+                supplier_internal_ids_2q = load_supplier_internal_ids(text_dir)
+                article_map_2q = load_articles(
+                    db, text_dir, suppliers, "2Q2018", supplier_internal_ids_2q
                 )
                 load_specs(db, text_dir, article_map_2q)
+                load_vehicle_compatibility(db, text_dir, supplier_internal_ids_2q)
+
+                # Media IDs belong to the 1Q2019 snapshot. Rebind them through
+                # stable supplier InternalID + normalized SKU, never by SKU alone.
+                supplier_internal_ids_1q = load_supplier_internal_ids(graphics_dir)
+                article_identity_1q = load_article_identity_index(
+                    graphics_dir, supplier_internal_ids_1q
+                )
+                article_map_1q_to_2q = resolve_snapshot_article_map(db, article_identity_1q)
                 image_manifest = load_image_manifest(graphics_dir / "images_manifest.txt")
-                load_drawings(db, graphics_dir, article_map_1q, image_manifest)
+                load_drawings(db, graphics_dir, article_map_1q_to_2q, image_manifest,
+                              supplier_internal_ids_1q)
                 load_crosses(db, text_dir, article_map_2q)
             count = db.execute("SELECT COUNT(*) FROM parts").fetchone()[0]
             if not count:
