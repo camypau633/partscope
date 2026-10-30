@@ -154,6 +154,7 @@ jobs:
           test -s raw_data/2Q2018/engines.csv
           test -s raw_data/2Q2018/passengercars_link_engines.csv
           test -s raw_data/1Q2019/articles.csv
+          test -s raw_data/1Q2019/suppliers.csv
           test -s raw_data/1Q2019/article_mediainformation.csv
           test -s raw_data/1Q2019/images_manifest.txt
           if find raw_data -type f -regextype posix-extended -regex '.*\.csv\.[0-9]{3}' | grep -q .; then
@@ -198,6 +199,13 @@ jobs:
                           raise SystemExit("Invalid part record in " + str(path) + ": " + key)
                       if record.get("sku") != key or not record.get("part_id"):
                           raise SystemExit("SKU/part identity mismatch in " + str(path) + ": " + key)
+                      if path.stem != key[:2]:
+                          raise SystemExit("Record is stored in the wrong SKU shard: " + str(path) + ": " + key)
+                      if not record.get("manufacturer_id") or not record.get("internal_id"):
+                          raise SystemExit("Composite manufacturer/internal/article identity is incomplete: " + key)
+                      expected_part_id = "2Q2018:" + record["manufacturer_id"] + ":" + record["internal_id"] + ":" + key
+                      if record["part_id"] != expected_part_id:
+                          raise SystemExit("Composite part_id does not match its fields: " + key)
                       if record["specs"]:
                           counts["with_specs"] += 1
                       if record["analogues"]:
@@ -210,6 +218,8 @@ jobs:
 
           if total < 1000:
               raise SystemExit("Expected at least 1,000 article records, got " + str(total))
+          if counts["with_compatibility"] == 0:
+              raise SystemExit("No vehicle compatibility records reached the 1,000-part smoke sample.")
 
           summary = [
               "status=success",
