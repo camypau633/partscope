@@ -316,12 +316,12 @@ def load_crosses(db, folder, part_id_by_article):
         if source_part and target_part and source_part != target_part:
             batch.append((source_part, target_part))
             if len(batch) >= 5000:
-                db.executemany("INSERT OR IGNORE INTO analogues(source_part_id,target_part_id) VALUES(?,?)", batch)
-                imported += db.execute("SELECT changes()").fetchone()[0]
+                cursor = db.executemany("INSERT OR IGNORE INTO analogues(source_part_id,target_part_id) VALUES(?,?)", batch)
+                imported += max(cursor.rowcount, 0)
                 batch = []
     if batch:
-        db.executemany("INSERT OR IGNORE INTO analogues(source_part_id,target_part_id) VALUES(?,?)", batch)
-        imported += db.execute("SELECT changes()").fetchone()[0]
+        cursor = db.executemany("INSERT OR IGNORE INTO analogues(source_part_id,target_part_id) VALUES(?,?)", batch)
+        imported += max(cursor.rowcount, 0)
     db.commit()
     print("[CROSS-AUDIT] rows: {:,}; resolved directed article links: {:,}".format(total, imported))
     return imported
