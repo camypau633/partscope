@@ -184,6 +184,31 @@ class TecDocJoinTests(unittest.TestCase):
 
 
 
+
+    def test_normalized_details_require_unique_manufacturer_and_sku(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "parts.csv").write_text(
+                "sku,supplier_id,article_id,brand,name\n"
+                "AB-123,10,100,BRANDA,Part A\n"
+                "AB-123,20,200,BRANDB,Part B\n",
+                encoding="utf-8",
+            )
+            (folder / "specifications.csv").write_text(
+                "sku,supplier_id,name,value\n"
+                "AB123,20,length,5 mm\n"
+                "AB123,,width,10 mm\n",
+                encoding="utf-8",
+            )
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            self.assertTrue(splitter.import_normalized(db, folder))
+            self.assertEqual(
+                list(db.execute("SELECT part_id,name FROM specs")),
+                [("normalized:20:200:AB123", "length")],
+            )
+            db.close()
+
     def test_media_article_index_uses_supplier_internal_id_across_snapshots(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
