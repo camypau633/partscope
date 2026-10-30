@@ -598,30 +598,41 @@ def import_normalized(db, input_dir):
     parts = input_dir / "parts.csv"
     if not parts.exists():
         return False
-    sku_to_part = {}
+    sku_to_parts = {}
+    supplier_sku_to_parts = {}
     for index, row in enumerate(normalized_rows(parts), 1):
         sku = clean_sku(pick(row, "sku", "article_number", "part_number", "article"))
         if not sku:
             continue
         article_id = pick(row, "article_id", "id") or str(index)
         source = pick(row, "source_snapshot", "source") or "normalized"
-        supplier_id = pick(row, "supplier_id")
-        supplier_internal_id = pick(row, "supplier_internal_id", "supplier_id")
+        supplier_id = pick(row, "supplier_id", "manufacturer_id")
+        supplier_internal_id = pick(row, "supplier_internal_id", "supplier_id", "manufacturer_id")
         part_id = "{}:{}:{}:{}".format(source, supplier_id, article_id, sku)
         db.execute("""INSERT OR IGNORE INTO parts(
                    part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id,brand,name
                    ) VALUES(?,?,?,?,?,?,?,?)""",
                    (part_id, sku, source, article_id, supplier_id, supplier_internal_id,
                     pick(row, "brand", "manufacturer"), pick(row, "name", "description")))
-        sku_to_part.setdefault(sku, part_id)
+        sku_to_parts.setdefault(sku, []).append(part_id)
+        supplier_sku_to_parts.setdefault((supplier_id, sku), []).append(part_id)
+
+    def resolve_normalized_part(row, sku):
+        explicit = pick(row, "part_id")
+        if explicit:
+            return explicit
+        supplier_id = pick(row, "supplier_id", "manufacturer_id")
+        candidates = (
+            supplier_sku_to_parts.get((supplier_id, sku), [])
+            if supplier_id else sku_to_parts.get(sku, [])
+        )
+        return candidates[0] if len(candidates) == 1 else ""
     for filename in ("specifications.csv", "article_criteria.csv", "criteria.csv"):
         path = input_dir / filename
         if path.exists():
             for row in normalized_rows(path):
                 sku = clean_sku(pick(row, "sku", "article_number", "part_number"))
-                part_id = pick(row, "part_id")
-                if not part_id:
-                    part_id = sku_to_part.get(sku, "")
+                part_id = resolve_normalized_part(row, sku)
                 name = pick(row, "name", "criterion", "attribute_name", "label")
                 value = pick(row, "value", "spec_value", "criteria_value")
                 if part_id and name and value:
@@ -632,7 +643,7 @@ def import_normalized(db, input_dir):
         if path.exists():
             for row in normalized_rows(path):
                 sku = clean_sku(pick(row, "sku", "article_number", "part_number"))
-                part_id = pick(row, "part_id") or sku_to_part.get(sku, "")
+                part_id = resolve_normalized_part(row, sku)
                 url = pick(row, "diagram_url", "image_url", "url")
                 if part_id and url.startswith(("https://", "http://")):
                     db.execute("INSERT OR IGNORE INTO drawings(part_id,url) VALUES(?,?)", (part_id, url))
