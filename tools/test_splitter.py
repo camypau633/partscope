@@ -294,7 +294,7 @@ class TecDocJoinTests(unittest.TestCase):
                 ),
                 "engines.csv": "30\t3000\t1\t1.4 TDCi\t1\tDiesel\t2010-01-01\t2012-12-31\t1\n",
                 "passengercars_link_engines.csv": "20\t30\n",
-                "articles_linkages.csv": "1\t2000\t260\t1000\tAB-123\t0\t\n",
+                "articles_linkages.csv": "1\t2000\t260\t10\tAB-123\t0\t\n",
             }
             for filename, content in fixtures.items():
                 (folder / filename).write_text(content, encoding="utf-8")
@@ -319,6 +319,32 @@ class TecDocJoinTests(unittest.TestCase):
             )
             db.close()
 
+    def test_vehicle_linkage_supplier_uses_supplier_id_not_internal_id(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            fixtures = {
+                "manufacturers.csv": "1\tFORD\t0\tFord\t1\n",
+                "models.csv": "2\t1\t2009-01-01\t2013-01-01\tFusion (JU_)\t1\n",
+                "passengercars.csv": "20\t2000\t2\tFORD\t1\t2010-01-01\t2012-12-31\tFord Fusion\tFusion 1.4\t1\n",
+                "engines.csv": "30\t3000\t1\t1.4 TDCi\t1\tDiesel\t2010-01-01\t2012-12-31\t1\n",
+                "passengercars_link_engines.csv": "20\t30\n",
+                # supplier column is suppliers.id (10), not InternalID (1000).
+                "articles_linkages.csv": "1\t2000\t260\t10\tAB123\t0\t\n",
+            }
+            for filename, content in fixtures.items():
+                (folder / filename).write_text(content, encoding="utf-8")
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            db.execute(
+                """INSERT INTO parts(
+                     part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id
+                   ) VALUES(?,?,?,?,?,?,?)""".replace("VALUES(?,?,?,?,?,?,?)", "VALUES(?,?,?,?,?,?)"),
+                ("2Q2018:10:100:AB123", "AB123", "2Q2018", "100", "10", "1000"),
+            )
+            count = splitter.load_vehicle_compatibility(db, folder, {"10": "1000"})
+            self.assertEqual(count, 1)
+            db.close()
+
     def test_vehicle_compatibility_rejects_duplicate_supplier_sku_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
@@ -328,7 +354,7 @@ class TecDocJoinTests(unittest.TestCase):
                 "passengercars.csv": "20\t2000\t2\tFORD\t1\t2010-01-01\t2012-12-31\tFord Fusion\tFusion 1.4\t1\n",
                 "engines.csv": "30\t3000\t1\t1.4 TDCi\t1\tDiesel\t2010-01-01\t2012-12-31\t1\n",
                 "passengercars_link_engines.csv": "20\t30\n",
-                "articles_linkages.csv": "1\t2000\t260\t1000\tAB123\t0\t\n",
+                "articles_linkages.csv": "1\t2000\t260\t10\tAB123\t0\t\n",
             }
             for filename, content in fixtures.items():
                 (folder / filename).write_text(content, encoding="utf-8")
