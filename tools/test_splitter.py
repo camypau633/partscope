@@ -221,7 +221,7 @@ class TecDocJoinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / "article_mediainformation.csv").write_text(
-                "900\\tPicture\\t\\t1\\t\\t\\t5\\t\\tAB123.jpg\\tFront view\\n",
+                "900\tPicture\t\t1\t\t\t5\t\tAB123.jpg\tFront view\n",
                 encoding="utf-8",
             )
             db = sqlite3.connect(":memory:")
@@ -245,15 +245,15 @@ class TecDocJoinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             fixtures = {
-                "manufacturers.csv": "1\\tFORD\\t0\\tFord\\t1\\n",
-                "models.csv": "2\\t1\\t2009-01-01\\t2013-01-01\\tFusion (JU_)\\t1\\n",
+                "manufacturers.csv": "1\tFORD\t0\tFord\t1\n",
+                "models.csv": "2\t1\t2009-01-01\t2013-01-01\tFusion (JU_)\t1\n",
                 "passengercars.csv": (
-                    "20\\t2000\\t2\\tFORD\\t1\\t2010-01-01\\t2012-12-31"
-                    "\\tFord Fusion\\tFusion 1.4\\t1\\n"
+                    "20\t2000\t2\tFORD\t1\t2010-01-01\t2012-12-31"
+                    "\tFord Fusion\tFusion 1.4\t1\n"
                 ),
-                "engines.csv": "30\\t3000\\t1\\t1.4 TDCi\\t1\\tDiesel\\t2010-01-01\\t2012-12-31\\t1\\n",
-                "passengercars_link_engines.csv": "20\\t30\\n",
-                "articles_linkages.csv": "1\\t2000\\t260\\t1000\\tAB-123\\t0\\t\\n",
+                "engines.csv": "30\t3000\t1\t1.4 TDCi\t1\tDiesel\t2010-01-01\t2012-12-31\t1\n",
+                "passengercars_link_engines.csv": "20\t30\n",
+                "articles_linkages.csv": "1\t2000\t260\t1000\tAB-123\t0\t\n",
             }
             for filename, content in fixtures.items():
                 (folder / filename).write_text(content, encoding="utf-8")
@@ -282,12 +282,12 @@ class TecDocJoinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             fixtures = {
-                "manufacturers.csv": "1\\tFORD\\t0\\tFord\\t1\\n",
-                "models.csv": "2\\t1\\t2009-01-01\\t2013-01-01\\tFusion (JU_)\\t1\\n",
-                "passengercars.csv": "20\\t2000\\t2\\tFORD\\t1\\t2010-01-01\\t2012-12-31\\tFord Fusion\\tFusion 1.4\\t1\\n",
-                "engines.csv": "30\\t3000\\t1\\t1.4 TDCi\\t1\\tDiesel\\t2010-01-01\\t2012-12-31\\t1\\n",
-                "passengercars_link_engines.csv": "20\\t30\\n",
-                "articles_linkages.csv": "1\\t2000\\t260\\t1000\\tAB123\\t0\\t\\n",
+                "manufacturers.csv": "1\tFORD\t0\tFord\t1\n",
+                "models.csv": "2\t1\t2009-01-01\t2013-01-01\tFusion (JU_)\t1\n",
+                "passengercars.csv": "20\t2000\t2\tFORD\t1\t2010-01-01\t2012-12-31\tFord Fusion\tFusion 1.4\t1\n",
+                "engines.csv": "30\t3000\t1\t1.4 TDCi\t1\tDiesel\t2010-01-01\t2012-12-31\t1\n",
+                "passengercars_link_engines.csv": "20\t30\n",
+                "articles_linkages.csv": "1\t2000\t260\t1000\tAB123\t0\t\n",
             }
             for filename, content in fixtures.items():
                 (folder / filename).write_text(content, encoding="utf-8")
