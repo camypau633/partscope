@@ -105,10 +105,10 @@ class TecDocJoinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / "articles.csv").write_text(
-                "100\\tSRC-100\\t10\\t1\\tSource part\\n", encoding="utf-8"
+                "100\tSRC-100\t10\t1\tSource part\n", encoding="utf-8"
             )
             (folder / "article_cross_list.csv").write_text(
-                "100\\t999\\tUNKNOWN\\n", encoding="utf-8"
+                "100\t999\tUNKNOWN\n", encoding="utf-8"
             )
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
