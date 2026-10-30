@@ -657,10 +657,10 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
     if prioritize_enriched and limit is not None:
         rows = db.execute("""
             SELECT p.part_id,p.sku,p.brand,p.name,p.supplier_id,p.article_id FROM parts p
-            ORDER BY (EXISTS(SELECT 1 FROM specs s WHERE s.part_id=p.part_id)) DESC,
-                     (EXISTS(SELECT 1 FROM analogues a WHERE a.source_part_id=p.part_id)) DESC,
+            ORDER BY (EXISTS(SELECT 1 FROM compatibility c WHERE c.part_id=p.part_id)) DESC,
                      (EXISTS(SELECT 1 FROM drawings d WHERE d.part_id=p.part_id)) DESC,
-                     (EXISTS(SELECT 1 FROM compatibility c WHERE c.part_id=p.part_id)) DESC,
+                     (EXISTS(SELECT 1 FROM specs s WHERE s.part_id=p.part_id)) DESC,
+                     (EXISTS(SELECT 1 FROM analogues a WHERE a.source_part_id=p.part_id)) DESC,
                      p.sku,p.part_id LIMIT ?
         """, (limit,)).fetchall()
         selected = {}
