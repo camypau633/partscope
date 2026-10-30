@@ -397,15 +397,14 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
     Verified source schema:
       articles_linkages.item_type=1 -> passengercars.InternalID
       articles_linkages.item_type=3 -> engines.InternalID
-      articles_linkages.supplier -> suppliers.id
+      articles_linkages.supplier -> suppliers.internalID
+      suppliers.id -> suppliers.internalID -> articles.Supplier
       articles_linkages.article -> articles.DataSupplierArticleNumber
-      articles.Supplier -> suppliers.id
       passengercars_link_engines.car_id -> passengercars.id
       passengercars_link_engines.engine_id -> engines.id
 
-    supplier_internal_ids is retained for call compatibility but is not used
-    here: articles_linkages.supplier is the suppliers.id foreign key, not
-    suppliers.internalID.
+    supplier_internal_ids maps articles.Supplier/suppliers.id to the
+    suppliers.internalID used by articles_linkages.supplier.
     """
     required = ("articles_linkages.csv", "passengercars.csv", "models.csv",
                 "manufacturers.csv", "engines.csv", "passengercars_link_engines.csv")
@@ -413,6 +412,11 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
     if missing:
         print("[WARN] Vehicle compatibility skipped; missing tables: " + ", ".join(missing))
         return 0
+
+    supplier_ids_by_internal = {}
+    for supplier_id, internal_id in (supplier_internal_ids or {}).items():
+        if internal_id:
+            supplier_ids_by_internal.setdefault(internal_id, []).append(supplier_id)
 
     manufacturer_names = {}
     for row in all_rows(folder, "manufacturers.csv"):
@@ -474,11 +478,11 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
 
     # Resolve each supplier/article pair to one exact internal part record.
     parts_by_supplier_sku = {}
-    for part_id, supplier_id, sku in db.execute(
-        "SELECT part_id,supplier_id,sku FROM parts WHERE source_snapshot='2Q2018'"
+    for part_id, supplier_internal_id, sku in db.execute(
+        "SELECT part_id,supplier_internal_id,sku FROM parts WHERE source_snapshot='2Q2018'"
     ):
-        if supplier_id:
-            parts_by_supplier_sku.setdefault((supplier_id, sku), []).append(part_id)
+        if supplier_internal_id:
+            parts_by_supplier_sku.setdefault((supplier_internal_id, sku), []).append(part_id)
 
     total = imported = ambiguous = 0
 
@@ -499,13 +503,16 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
             continue
         total += 1
         item_type, item_id = row[0].strip(), row[1].strip()
-        supplier_id = row[3].strip()
+        supplier_internal_id = row[3].strip()
         sku = clean_sku(row[4])
-        if not item_id or not supplier_id or not sku:
+        if not item_id or not supplier_internal_id or not sku:
             continue
-        # articles_linkages.supplier is suppliers.id. Resolve the article
-        # only within that exact supplier, never by SKU or InternalID alone.
-        part_matches = parts_by_supplier_sku.get((supplier_id, sku), [])
+        supplier_matches = supplier_ids_by_internal.get(supplier_internal_id, [])
+        if len(supplier_matches) != 1:
+            continue
+        # TecDoc query_examples.sql joins articles_linkages.supplier to
+        # suppliers.internalID, then articles.Supplier to suppliers.id.
+        part_matches = parts_by_supplier_sku.get((supplier_internal_id, sku), [])
         if len(part_matches) != 1:
             if len(part_matches) > 1:
                 ambiguous += 1
