@@ -185,7 +185,7 @@ jobs:
 
           total = 0
           counts = {"with_specs": 0, "with_analogues": 0, "with_drawings": 0, "with_compatibility": 0}
-          required = {"part_id", "sku", "brand", "name", "specs", "technical_drawings", "analogues", "compatibility"}
+          required = {"part_id", "manufacturer_id", "internal_id", "sku", "brand", "name", "specs", "technical_drawings", "analogues", "compatibility"}
           for path in files:
               data = json.loads(path.read_text(encoding="utf-8"))
               if not isinstance(data, dict) or not data:
