@@ -338,7 +338,7 @@ class TecDocJoinTests(unittest.TestCase):
             db.execute(
                 """INSERT INTO parts(
                      part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id
-                   ) VALUES(?,?,?,?,?,?,?)""".replace("VALUES(?,?,?,?,?,?,?)", "VALUES(?,?,?,?,?,?)"),
+                   ) VALUES(?,?,?,?,?,?)""",
                 ("2Q2018:10:100:AB123", "AB123", "2Q2018", "100", "10", "1000"),
             )
             count = splitter.load_vehicle_compatibility(db, folder, {"10": "1000"})
