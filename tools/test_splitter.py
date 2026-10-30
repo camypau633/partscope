@@ -178,6 +178,16 @@ class TecDocJoinTests(unittest.TestCase):
             db.close()
 
 
+
+    def test_media_article_index_uses_supplier_internal_id_across_snapshots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "articles.csv").write_text(
+                "900\tAB-123\t10\t1\tPart\n", encoding="utf-8"
+            )
+            index = splitter.load_article_identity_index(folder, {"10": "1000"})
+            self.assertEqual(index, {"900": ("1000", "AB123", "10")})
+
     def test_snapshot_media_rebinds_by_supplier_internal_id_and_sku(self):
         db = sqlite3.connect(":memory:")
         splitter.create_db(db)
@@ -231,10 +241,11 @@ class TecDocJoinTests(unittest.TestCase):
                 """INSERT INTO parts(
                      part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id
                    ) VALUES(?,?,?,?,?,?)""",
-                (part_id, "AB123", "2Q2018", "100", "10", "1000"),
+                (part_id, "AB123", "2Q2018", "100", "11", "1000"),
             )
             count = splitter.load_drawings(
-                db, folder, {"900": part_id}, {"images/10/AB/AB123.jpg"}
+                db, folder, {"900": part_id}, {"images/10/AB/AB123.jpg"},
+                {"900": "10"},
             )
             self.assertEqual(count, 1)
             url = db.execute("SELECT url FROM drawings WHERE part_id=?", (part_id,)).fetchone()[0]
