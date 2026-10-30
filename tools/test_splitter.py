@@ -130,7 +130,7 @@ class TecDocJoinTests(unittest.TestCase):
             mapping = splitter.load_articles(db, folder, {"10": "BRANDA", "20": "BRANDB"}, "test")
             rows = list(db.execute("SELECT sku,supplier_id,brand FROM parts"))
             self.assertEqual(rows, [("AB12", "10", "BRANDA"), ("AB12", "20", "BRANDB")])
-            self.assertEqual(mapping, {"100": "2Q2018:100", "200": "2Q2018:200"})
+            self.assertEqual(mapping, {"100": "test:100", "200": "test:200"})
             db.close()
 
     def test_cross_reference_keeps_source_direction(self):
