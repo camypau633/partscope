@@ -327,33 +327,44 @@ def load_crosses(db, folder, part_id_by_article):
     return imported
 
 def import_normalized(db, input_dir):
-    """Compatibility fallback for a prepared CSV set."""
+    """Import normalized CSVs using the same article identity model as TecDoc."""
     parts = input_dir / "parts.csv"
     if not parts.exists():
         return False
-    for row in normalized_rows(parts):
+    sku_to_part = {}
+    for index, row in enumerate(normalized_rows(parts), 1):
         sku = clean_sku(pick(row, "sku", "article_number", "part_number", "article"))
-        if sku:
-            db.execute("INSERT OR REPLACE INTO parts(sku,brand,name) VALUES(?,?,?)",
-                       (sku, pick(row, "brand", "manufacturer"), pick(row, "name", "description")))
+        if not sku:
+            continue
+        article_id = pick(row, "article_id", "id") or str(index)
+        source = pick(row, "source_snapshot", "source") or "normalized"
+        part_id = source + ":" + article_id
+        db.execute("INSERT OR IGNORE INTO parts(part_id,sku,source_snapshot,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?,?,?)",
+                   (part_id, sku, source, article_id, pick(row, "supplier_id"), pick(row, "brand", "manufacturer"),
+                    pick(row, "name", "description")))
+        sku_to_part.setdefault(sku, part_id)
     for filename in ("specifications.csv", "article_criteria.csv", "criteria.csv"):
         path = input_dir / filename
         if path.exists():
             for row in normalized_rows(path):
                 sku = clean_sku(pick(row, "sku", "article_number", "part_number"))
+                part_id = pick(row, "part_id")
+                if not part_id:
+                    part_id = sku_to_part.get(sku, "")
                 name = pick(row, "name", "criterion", "attribute_name", "label")
                 value = pick(row, "value", "spec_value", "criteria_value")
-                if sku and name and value:
-                    db.execute("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)",
-                               (sku, name, value, pick(row, "unit")))
+                if part_id and name and value:
+                    db.execute("INSERT OR IGNORE INTO specs(part_id,name,value,unit) VALUES(?,?,?,?)",
+                               (part_id, name, value, pick(row, "unit")))
     for filename in ("diagrams.csv", "graphics.csv", "article_graphics.csv", "article_images.csv"):
         path = input_dir / filename
         if path.exists():
             for row in normalized_rows(path):
                 sku = clean_sku(pick(row, "sku", "article_number", "part_number"))
+                part_id = pick(row, "part_id") or sku_to_part.get(sku, "")
                 url = pick(row, "diagram_url", "image_url", "url")
-                if sku and url.startswith(("https://", "http://")):
-                    db.execute("INSERT OR IGNORE INTO drawings(sku,url) VALUES(?,?)", (sku,url))
+                if part_id and url.startswith(("https://", "http://")):
+                    db.execute("INSERT OR IGNORE INTO drawings(part_id,url) VALUES(?,?)", (part_id, url))
     db.commit()
     return True
 
