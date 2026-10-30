@@ -28,9 +28,9 @@ class TecDocJoinTests(unittest.TestCase):
             )
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
-            splitter.load_specs(db, folder, {"1": "SKU-1", "203": "WRONG-SKU"})
+            splitter.load_specs(db, folder, {"1": "2Q2018:1", "203": "2Q2018:203"})
             rows = list(db.execute("SELECT sku, name, value FROM specs"))
-            self.assertEqual(rows, [("SKU-1", "длина", "1040 мм")])
+            self.assertEqual(rows, [("2Q2018:1", "длина", "1040 мм")])
             db.close()
 
     def test_crosses_skip_ambiguous_normalized_target_numbers(self):
@@ -51,7 +51,7 @@ class TecDocJoinTests(unittest.TestCase):
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
             splitter.load_crosses(
-                db, folder, {"100": "SRC100", "200": "AB12", "201": "AB12"}
+                db, folder, {"100": "2Q2018:100", "200": "2Q2018:200", "201": "2Q2018:201"}
             )
             self.assertEqual(
                 db.execute("SELECT COUNT(*) FROM analogues").fetchone()[0], 0
@@ -94,7 +94,7 @@ class TecDocJoinTests(unittest.TestCase):
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
             count = splitter.load_crosses(
-                db, folder, {"100": "SRC100", "200": "TARGET200", "300": "OTHER300"}
+                db, folder, {"100": "2Q2018:100", "200": "2Q2018:200", "300": "2Q2018:300"}
             )
             pairs = set(db.execute("SELECT source_sku, sku FROM analogues"))
             self.assertEqual(count, 1)
@@ -112,7 +112,7 @@ class TecDocJoinTests(unittest.TestCase):
             )
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
-            count = splitter.load_crosses(db, folder, {"100": "SRC100"})
+            count = splitter.load_crosses(db, folder, {"100": "2Q2018:100"})
             self.assertEqual(count, 0)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM analogues").fetchone()[0], 0)
             db.close()
@@ -129,8 +129,8 @@ class TecDocJoinTests(unittest.TestCase):
             splitter.create_db(db)
             mapping = splitter.load_articles(db, folder, {"10": "BRANDA", "20": "BRANDB"}, "test")
             rows = list(db.execute("SELECT sku,supplier_id,brand FROM parts"))
-            self.assertEqual(rows, [("AB12", "10", "BRANDA")])
-            self.assertEqual(mapping, {"100": "AB12"})
+            self.assertEqual(rows, [("AB12", "10", "BRANDA"), ("AB12", "20", "BRANDB")])
+            self.assertEqual(mapping, {"100": "2Q2018:100", "200": "2Q2018:200"})
             db.close()
 
     def test_cross_reference_keeps_source_direction(self):
@@ -153,8 +153,28 @@ class TecDocJoinTests(unittest.TestCase):
             self.assertEqual(count, 1)
             self.assertEqual(
                 list(db.execute("SELECT source_sku,sku FROM analogues")),
-                [("SRC100", "TARGET200")],
+                [("2Q2018:100", "2Q2018:200")],
             )
+            db.close()
+
+
+    def test_duplicate_skus_export_as_multiple_records(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            db.executemany(
+                "INSERT INTO parts(part_id,sku,source_snapshot,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?,?,?)",
+                [
+                    ("2Q2018:100", "AB12", "2Q2018", "100", "10", "BRANDA", "Part A"),
+                    ("2Q2018:200", "AB12", "2Q2018", "200", "20", "BRANDB", "Part B"),
+                ],
+            )
+            splitter.export_shards(db, root)
+            import json
+            shard = json.loads((root / "AB.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(shard["AB12"]), 2)
+            self.assertEqual({p["part_id"] for p in shard["AB12"]}, {"2Q2018:100", "2Q2018:200"})
             db.close()
 
 
