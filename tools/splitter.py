@@ -353,8 +353,6 @@ def load_drawings(db, folder, article_to_part_id, image_paths, supplier_internal
     if not path.exists():
         print("[WARN] article_mediainformation.csv missing; no drawings imported")
         return 0
-    supplier_internal_ids = supplier_internal_ids or {}
-    supplier_ids_by_internal = {value: key for key, value in supplier_internal_ids.items()}
     count = missing_article = missing_image = 0
     batch = []
     for row in read_tsv(path):
@@ -518,6 +516,10 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids):
 
         if item_type == "1":
             vehicles = cars_by_internal.get(item_id, [])
+            # InternalID is expected to identify one vehicle. If the export
+            # contains duplicates, do not spread one part across several cars.
+            if len(vehicles) != 1:
+                continue
             for vehicle in vehicles:
                 linked_engine_ids = sorted(car_engines.get(vehicle["id"], set()))
                 engine_names = [
