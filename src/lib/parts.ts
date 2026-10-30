@@ -1,6 +1,6 @@
 import { get, set } from "idb-keyval";
 
-export type Analogue = { brand: string; sku: string; name: string };
+export type Analogue = { partId?: string; brand: string; sku: string; name: string };
 export type Vehicle = { id: string; make: string; model: string; years: string; engine: string };
 export type Spec = { key: string; label: string; value: string | number; unit?: string };
 export type Hotspot = {
@@ -15,6 +15,7 @@ export type Hotspot = {
 };
 
 export type PartData = {
+  partId: string;
   sku: string;
   name: string;
   brand: string;
@@ -97,7 +98,7 @@ export async function fetchWithProxyRotation<T>(sku: string): Promise<T> {
     }
 
     const record = (shard as Raw)[cleanSku];
-    if (!record || typeof record !== "object" || Array.isArray(record)) {
+    if (!record || typeof record !== "object") {
       console.info(`[Part Finder] SKU "${cleanSku}" not present in shard ${url}.`);
       return emptyRemoteRecord(cleanSku) as T;
     }
@@ -122,6 +123,7 @@ export function normalizeRemote(
 ): Omit<PartData, "diagram"> & { diagramUrl: string; hotspots: Hotspot[] } {
   const analogues: Analogue[] = arr(raw["analogs"] ?? raw["analogues"])
     .map((item) => ({
+      partId: str(item["part_id"] ?? item["partId"]),
       brand: str(item["brand"] ?? item["manufacturer"]),
       sku: sanitizeSku(str(item["sku"] ?? item["number"] ?? item["articleNumber"])),
       name: str(item["name"] ?? item["description"]),
@@ -184,6 +186,7 @@ export function normalizeRemote(
     .filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y));
 
   return {
+    partId: str(raw["part_id"] ?? raw["partId"]),
     sku: cleanPartNumber(sku),
     name: str(raw["name"] ?? raw["partName"]),
     brand: str(raw["brand"] ?? raw["manufacturer"]),
@@ -198,21 +201,21 @@ export function normalizeRemote(
   };
 }
 
-const cacheKey = (sku: string) => `part:v8:${sku}`;
-const imageKey = (sku: string) => `img:v8:${sku}`;
+const cacheKey = (sku: string, partId: string) => `part:v9:${sku}:${partId || "legacy"}`;
+const imageKey = (sku: string, partId: string) => `img:v9:${sku}:${partId || "legacy"}`;
 
-async function cacheImage(sku: string, url: string) {
+async function cacheImage(sku: string, partId: string, url: string) {
   if (!url || url.startsWith("data:") || url.startsWith("/")) return;
   try {
     const response = await fetch(url);
-    if (response.ok) await set(imageKey(sku), await response.blob());
+    if (response.ok) await set(imageKey(sku, partId), await response.blob());
   } catch {
     // Some image hosts block cross-origin caching; the live URL can still render.
   }
 }
 
-async function resolveImage(sku: string, url: string) {
-  const blob = await get<Blob>(imageKey(sku)).catch(() => undefined);
+async function resolveImage(sku: string, partId: string, url: string) {
+  const blob = await get<Blob>(imageKey(sku, partId)).catch(() => undefined);
   return blob ? URL.createObjectURL(blob) : url;
 }
 
@@ -229,40 +232,43 @@ function measure(url: string): Promise<{ width: number; height: number }> {
   });
 }
 
-/** Return catalogue data, or a valid empty state when the part is not present. */
-export async function getPart(rawSku: string): Promise<PartData & { fromCache: boolean }> {
+/** Return every TecDoc article record for a printed part number. */
+export async function getParts(rawSku: string): Promise<Array<PartData & { fromCache: boolean }>> {
   const sku = sanitizeSku(rawSku);
   if (!sku) throw new Error("Enter a part number first.");
-
-  const cached = await get<PartData>(cacheKey(sku)).catch(() => undefined);
-  if (cached) {
-    const imageUrl = await resolveImage(sku, cached.diagram.imageUrl);
-    return { ...cached, diagram: { ...cached.diagram, imageUrl }, fromCache: true };
+  const rawResult = await fetchWithProxyRotation<Raw | Raw[]>(sku);
+  const records = Array.isArray(rawResult) ? rawResult : [rawResult];
+  const output: Array<PartData & { fromCache: boolean }> = [];
+  for (const raw of records) {
+    if (!raw || typeof raw !== "object") continue;
+    const partId = str(raw["part_id"] ?? raw["partId"]);
+    const cached = await get<PartData>(cacheKey(sku, partId)).catch(() => undefined);
+    if (cached) {
+      const imageUrl = await resolveImage(sku, partId, cached.diagram.imageUrl);
+      output.push({ ...cached, diagram: { ...cached.diagram, imageUrl }, fromCache: true });
+      continue;
+    }
+    const { diagramUrl, hotspots, ...rest } = normalizeRemote(sku, raw);
+    const size = await measure(diagramUrl);
+    const data: PartData = { ...rest, diagram: { imageUrl: diagramUrl, ...size, hotspots } };
+    const hasRealData = Boolean(data.name || data.brand || data.analogues.length ||
+      data.applicability.length || data.specs.length || data.diagram.imageUrl || data.diagram.hotspots.length);
+    if (hasRealData) {
+      await set(cacheKey(sku, partId), data).catch(() => {});
+      await cacheImage(sku, partId, diagramUrl);
+    }
+    const imageUrl = await resolveImage(sku, partId, diagramUrl);
+    output.push({ ...data, diagram: { ...data.diagram, imageUrl }, fromCache: false });
   }
+  return output;
+}
 
-  const raw = await fetchWithProxyRotation<Raw>(sku);
-  const { diagramUrl, hotspots, ...rest } = normalizeRemote(sku, raw);
-  const size = await measure(diagramUrl);
-  const data: PartData = {
-    ...rest,
-    diagram: { imageUrl: diagramUrl, ...size, hotspots },
-  };
-
-  const hasRealData = Boolean(
-    data.name ||
-    data.brand ||
-    data.analogues.length ||
-    data.applicability.length ||
-    data.specs.length ||
-    data.diagram.imageUrl ||
-    data.diagram.hotspots.length
-  );
-
-  if (hasRealData) {
-    await set(cacheKey(sku), data).catch(() => {});
-    await cacheImage(sku, diagramUrl);
-  }
-
-  const imageUrl = await resolveImage(sku, diagramUrl);
-  return { ...data, diagram: { ...data.diagram, imageUrl }, fromCache: false };
+/** Return one selected TecDoc article; legacy callers without an ID get the first candidate. */
+export async function getPart(rawSku: string, partId?: string): Promise<PartData & { fromCache: boolean }> {
+  const records = await getParts(rawSku);
+  const selected = partId ? records.find((record) => record.partId === partId) : records[0];
+  if (selected) return selected;
+  const sku = sanitizeSku(rawSku);
+  const { diagramUrl, hotspots, ...rest } = normalizeRemote(sku, emptyRemoteRecord(sku));
+  return { ...rest, partId: "", diagram: { imageUrl: diagramUrl, width: 0, height: 0, hotspots }, fromCache: false };
 }
