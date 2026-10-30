@@ -288,7 +288,7 @@ def load_article_identity_index(folder, supplier_internal_ids):
         supplier_internal_id = supplier_internal_ids.get(supplier_id, "")
         sku = clean_sku(number)
         if article_id and supplier_internal_id and sku:
-            result[article_id] = (supplier_internal_id, sku)
+            result[article_id] = (supplier_internal_id, sku, supplier_id)
     return result
 
 
@@ -307,7 +307,7 @@ def resolve_snapshot_article_map(db, article_identity_index):
     resolved = {}
     ambiguous = 0
     for article_id, identity in article_identity_index.items():
-        matches = candidates.get(identity, [])
+        matches = candidates.get(identity[:2], [])
         if len(matches) == 1:
             resolved[article_id] = matches[0]
         elif len(matches) > 1:
@@ -324,35 +324,33 @@ def sanitize_picture_name(value):
     return re.sub(r'[ "\\\\/:*?|<>]', "==", str(value or "").strip())
 
 
-def resolve_image_path(supplier_id, supplier_internal_id, picture_name, image_paths):
+def resolve_image_path(supplier_id, picture_name, image_paths):
     picture = sanitize_picture_name(picture_name).replace("\\\\", "/").split("/")[-1]
-    if not picture:
+    if not picture or not supplier_id:
         return ""
     prefix = picture[:2]
-    supplier_folders = {str(value) for value in (supplier_id, supplier_internal_id) if value}
-    expected = []
-    for supplier in supplier_folders:
-        expected.append("images/{}/{}/{}".format(supplier, prefix, picture))
-    for candidate in expected:
-        if candidate in image_paths:
-            return candidate
-    # Some exports use the supplier's alternate ID in the image directory.
-    matches = []
+    expected = "images/{}/{}/{}".format(supplier_id, prefix, picture)
+    if expected in image_paths:
+        return expected
+    # Permit case differences only inside the same supplier directory.
     suffix = "/{}/{}".format(prefix, picture).lower()
+    matches = []
     for candidate in image_paths:
         normalized = candidate.replace("\\\\", "/")
         parts = normalized.split("/")
-        if normalized.lower().endswith(suffix) and len(parts) >= 4 and parts[-3] in supplier_folders:
+        if (normalized.lower().endswith(suffix) and len(parts) >= 4
+                and parts[-3] == str(supplier_id)):
             matches.append(normalized)
     return matches[0] if len(matches) == 1 else ""
 
 
-def load_drawings(db, folder, article_to_part_id, image_paths, supplier_internal_ids=None):
+def load_drawings(db, folder, article_to_part_id, image_paths, article_supplier_ids=None):
     """Link 1Q2019 media through its real article_id field and source image tree."""
     path = folder / "article_mediainformation.csv"
     if not path.exists():
         print("[WARN] article_mediainformation.csv missing; no drawings imported")
         return 0
+    article_supplier_ids = article_supplier_ids or {}
     count = missing_article = missing_image = 0
     batch = []
     for row in read_tsv(path):
@@ -367,12 +365,13 @@ def load_drawings(db, folder, article_to_part_id, image_paths, supplier_internal
         picture_name = row[8].strip()
         if not picture_name:
             continue
-        part = db.execute(
-            "SELECT supplier_id,supplier_internal_id FROM parts WHERE part_id=?", (part_id,)
-        ).fetchone()
-        if not part:
-            continue
-        image_path = resolve_image_path(part[0], part[1], picture_name, image_paths)
+        source_supplier_id = article_supplier_ids.get(article_id, "")
+        if not source_supplier_id:
+            part = db.execute(
+                "SELECT supplier_id FROM parts WHERE part_id=?", (part_id,)
+            ).fetchone()
+            source_supplier_id = part[0] if part else ""
+        image_path = resolve_image_path(source_supplier_id, picture_name, image_paths)
         if not image_path:
             missing_image += 1
             continue
@@ -785,9 +784,12 @@ def main():
                     graphics_dir, supplier_internal_ids_1q
                 )
                 article_map_1q_to_2q = resolve_snapshot_article_map(db, article_identity_1q)
+                article_supplier_ids_1q = {
+                    article_id: identity[2] for article_id, identity in article_identity_1q.items()
+                }
                 image_manifest = load_image_manifest(graphics_dir / "images_manifest.txt")
                 load_drawings(db, graphics_dir, article_map_1q_to_2q, image_manifest,
-                              supplier_internal_ids_1q)
+                              article_supplier_ids_1q)
                 load_crosses(db, text_dir, article_map_2q)
             count = db.execute("SELECT COUNT(*) FROM parts").fetchone()[0]
             if not count:
