@@ -365,12 +365,12 @@ def load_drawings(db, folder, article_to_part_id, image_paths, article_supplier_
         picture_name = row[8].strip()
         if not picture_name:
             continue
+        # Image directories belong to the 1Q2019 supplier ID. Never fall
+        # back to the 2Q2018 supplier ID when quarterly IDs differ.
         source_supplier_id = article_supplier_ids.get(article_id, "")
         if not source_supplier_id:
-            part = db.execute(
-                "SELECT supplier_id FROM parts WHERE part_id=?", (part_id,)
-            ).fetchone()
-            source_supplier_id = part[0] if part else ""
+            missing_image += 1
+            continue
         image_path = resolve_image_path(source_supplier_id, picture_name, image_paths)
         if not image_path:
             missing_image += 1
