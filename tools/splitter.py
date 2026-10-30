@@ -645,9 +645,11 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
     output_dir.mkdir(parents=True, exist_ok=True)
     if prioritize_enriched and limit is not None:
         rows = db.execute("""
-            SELECT p.part_id,p.sku,p.brand,p.name FROM parts p
+            SELECT p.part_id,p.sku,p.brand,p.name,p.supplier_id,p.article_id FROM parts p
             ORDER BY (EXISTS(SELECT 1 FROM specs s WHERE s.part_id=p.part_id)) DESC,
                      (EXISTS(SELECT 1 FROM analogues a WHERE a.source_part_id=p.part_id)) DESC,
+                     (EXISTS(SELECT 1 FROM drawings d WHERE d.part_id=p.part_id)) DESC,
+                     (EXISTS(SELECT 1 FROM compatibility c WHERE c.part_id=p.part_id)) DESC,
                      p.sku,p.part_id LIMIT ?
         """, (limit,)).fetchall()
         selected = {}
@@ -662,10 +664,10 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
         destination = output_dir / (prefix + ".json")
         temporary = destination.with_suffix(".json.tmp")
         rows = selected[prefix] if selected is not None else db.execute(
-            "SELECT part_id,sku,brand,name FROM parts WHERE substr(sku,1,2)=? ORDER BY sku,part_id", (prefix,)
+            "SELECT part_id,sku,brand,name,supplier_id,article_id FROM parts WHERE substr(sku,1,2)=? ORDER BY sku,part_id", (prefix,)
         )
         shard = {}
-        for part_id, sku, brand, name in rows:
+        for part_id, sku, brand, name, manufacturer_id, internal_id in rows:
             specs = {}
             for label, value, unit in db.execute("SELECT name,value,unit FROM specs WHERE part_id=? ORDER BY rowid", (part_id,)):
                 specs[label] = value + ((" " + unit) if unit and unit.lower() not in value.lower() else "")
@@ -675,7 +677,8 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
                     JOIN parts p ON p.part_id=a.target_part_id WHERE a.source_part_id=? ORDER BY p.sku,p.part_id LIMIT 500""", (part_id,))]
             compatibility = [{"brand": r[0], "model": r[1], "years": r[2], "engine": r[3]}
                 for r in db.execute("SELECT brand,model,years,engine FROM compatibility WHERE part_id=? LIMIT 2000", (part_id,))]
-            record = {"part_id": part_id, "sku": sku, "brand": brand or "", "name": name or "",
+            record = {"part_id": part_id, "manufacturer_id": manufacturer_id or "",
+                      "internal_id": internal_id or "", "sku": sku, "brand": brand or "", "name": name or "",
                       "specs": specs, "technical_drawings": drawings, "analogues": analogues, "compatibility": compatibility}
             shard.setdefault(sku, []).append(record)
             exported += 1
@@ -795,7 +798,7 @@ def main():
             if not count:
                 print("[ERROR] No articles imported. Inspect the downloaded TecDoc CSV layout.", file=sys.stderr)
                 return 1
-            print("[INFO] Unique SKUs: {:,}".format(count))
+            print("[INFO] Unique part records: {:,}".format(count))
             exported, shard_count = export_shards(
                 db, output_dir, args.limit, prioritize_enriched=args.prioritize_enriched
             )
