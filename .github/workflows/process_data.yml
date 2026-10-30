@@ -52,6 +52,8 @@ jobs:
                   "tables": (
                       "articles.csv", "suppliers.csv", "article_attributes.csv",
                       "article_informations.csv", "items_atributes.csv", "article_cross_list.csv",
+                      "articles_linkages.csv", "passengercars.csv", "models.csv",
+                      "manufacturers.csv", "engines.csv", "passengercars_link_engines.csv",
                   ),
               },
               "1Q2019": {
@@ -145,6 +147,12 @@ jobs:
           test -s raw_data/2Q2018/articles.csv
           test -s raw_data/2Q2018/suppliers.csv
           test -s raw_data/2Q2018/article_attributes.csv
+          test -s raw_data/2Q2018/articles_linkages.csv
+          test -s raw_data/2Q2018/passengercars.csv
+          test -s raw_data/2Q2018/models.csv
+          test -s raw_data/2Q2018/manufacturers.csv
+          test -s raw_data/2Q2018/engines.csv
+          test -s raw_data/2Q2018/passengercars_link_engines.csv
           test -s raw_data/1Q2019/articles.csv
           test -s raw_data/1Q2019/article_mediainformation.csv
           test -s raw_data/1Q2019/images_manifest.txt
