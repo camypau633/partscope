@@ -484,7 +484,7 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
         if supplier_internal_id:
             parts_by_supplier_sku.setdefault((supplier_internal_id, sku), []).append(part_id)
 
-    total = imported = ambiguous = 0
+    total = imported = ambiguous = unsupported_types = 0
 
     def add_compatibility(part_id, vehicle, engine_name=""):
         nonlocal imported
@@ -537,19 +537,16 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
                         add_compatibility(part_id, vehicle, engine_name)
                 else:
                     add_compatibility(part_id, vehicle)
-        elif item_type == "3":
-            engine_matches = engines_by_internal.get(item_id, [])
-            if len(engine_matches) != 1:
-                continue
-            engine = engine_matches[0]
-            for car_id in sorted(engine_cars.get(engine["id"], set())):
-                vehicle = cars_by_id.get(car_id)
-                if vehicle:
-                    add_compatibility(part_id, vehicle, engine["name"])
+        else:
+            # Only item_type=1 (PassengerCar) is explicitly confirmed by the
+            # source query examples. Other item_type values are not guessed:
+            # they may represent commercial vehicles, motorcycles, or other
+            # TecDoc trees, not necessarily engines.
+            unsupported_types += 1
 
     db.commit()
-    print("[VEHICLE-AUDIT] article linkage rows: {:,}; vehicle/engine matches: {:,}; ambiguous part matches: {:,}".format(
-        total, imported, ambiguous
+    print("[VEHICLE-AUDIT] article linkage rows: {:,}; passenger-car matches: {:,}; ambiguous part matches: {:,}; unverified item types: {:,}".format(
+        total, imported, ambiguous, unsupported_types
     ))
     return imported
 
