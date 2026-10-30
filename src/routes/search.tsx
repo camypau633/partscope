@@ -88,13 +88,6 @@ function Results() {
                   <Link to="/search" search={{ part: analogue.sku }} className="font-mono font-semibold hover:text-primary">{analogue.sku}</Link>
                   <div className="truncate text-xs text-muted-foreground">{analogue.brand}{analogue.name ? ` · ${analogue.name}` : ""}</div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => window.open(`https://www.google.com/search?q=${encodeURIComponent(`${analogue.brand} ${analogue.sku} ${analogue.name} купить`)}`, "_blank", "noopener,noreferrer")}
-                  className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-amber-600"
-                >
-                  Где купить
-                </button>
               </li>
             ))}
           </ul>
