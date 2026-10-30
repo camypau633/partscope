@@ -39,13 +39,13 @@ class TecDocJoinTests(unittest.TestCase):
             # Two printed numbers collapse to the same normalized SKU. The importer
             # must not guess which target supplier/article was intended.
             (folder / "articles.csv").write_text(
-                "100\\tSRC-100\\t10\\t1\\tSource part\\n"
-                "200\\tAB-12\\t20\\t1\\tTarget A\\n"
-                "201\\tAB12\\t20\\t1\\tTarget B\\n",
+                "100\tSRC-100\t10\t1\tSource part\n"
+                "200\tAB-12\t20\t1\tTarget A\n"
+                "201\tAB12\t20\t1\tTarget B\n",
                 encoding="utf-8",
             )
             (folder / "article_cross_list.csv").write_text(
-                "100\\t20\\tAB/12\\n",
+                "100\t20\tAB/12\n",
                 encoding="utf-8",
             )
             db = sqlite3.connect(":memory:")
@@ -105,8 +105,8 @@ class TecDocJoinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / "articles.csv").write_text(
-                "100\\tAB-12\\t10\\t1\\tBrand A part\\n"
-                "200\\tAB12\\t20\\t1\\tBrand B part\\n",
+                "100\tAB-12\t10\t1\tBrand A part\n"
+                "200\tAB12\t20\t1\tBrand B part\n",
                 encoding="utf-8",
             )
             db = sqlite3.connect(":memory:")
@@ -121,12 +121,12 @@ class TecDocJoinTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / "articles.csv").write_text(
-                "100\\tSRC-100\\t10\\t1\\tSource part\\n"
-                "200\\tTARGET-200\\t20\\t1\\tTarget part\\n",
+                "100\tSRC-100\t10\t1\tSource part\n"
+                "200\tTARGET-200\t20\t1\tTarget part\n",
                 encoding="utf-8",
             )
             (folder / "article_cross_list.csv").write_text(
-                "100\\t20\\tTARGET-200\\n",
+                "100\t20\tTARGET-200\n",
                 encoding="utf-8",
             )
             db = sqlite3.connect(":memory:")
