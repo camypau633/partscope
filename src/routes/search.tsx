@@ -50,7 +50,7 @@ function Results() {
         </div>
         <div className="mt-3 grid grid-cols-3">
           {([
-            ["analogues", "Аналоги"],
+            ["analogues", "Кросс-ссылки"],
             ["apps", "Применимость"],
             ["drawings", "Чертежи и размеры"],
           ] as const).map(([key, label]) => (
@@ -104,13 +104,13 @@ function Results() {
               <li key={`${analogue.brand}:${analogue.sku}`} className="flex items-center gap-3 px-4 py-3">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-[10px] font-bold text-accent-foreground">{analogue.brand.slice(0, 4)}</div>
                 <div className="min-w-0 flex-1">
-                  <Link to="/search" search={{ part: analogue.sku }} className="font-mono font-semibold hover:text-primary">{analogue.sku}</Link>
+                  <Link to="/search" search={{ part: analogue.sku, partId: analogue.partId ?? "" }} className="font-mono font-semibold hover:text-primary">{analogue.sku}</Link>
                   <div className="truncate text-xs text-muted-foreground">{analogue.brand}{analogue.name ? ` · ${analogue.name}` : ""}</div>
                 </div>
               </li>
             ))}
           </ul>
-        ) : <p className="p-8 text-center text-sm text-muted-foreground">Источник не предоставил аналоги для этого номера.</p>
+        ) : <p className="p-8 text-center text-sm text-muted-foreground">В TecDoc нет подтверждённых перекрёстных ссылок для этой записи.</p>
       )}
 
       {selected && tab === "apps" && (
