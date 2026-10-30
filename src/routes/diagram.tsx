@@ -7,7 +7,7 @@ import { getPart, sanitizeSku, type Hotspot, type PartData } from "@/lib/parts";
 import { TechnicalDrawings } from "@/components/TechnicalDrawings";
 
 export const Route = createFileRoute("/diagram")({
-  validateSearch: (s: Record<string, unknown>) => ({ part: sanitizeSku(String(s["part"] ?? "")), car: String(s["car"] ?? "") }),
+  validateSearch: (s: Record<string, unknown>) => ({ part: sanitizeSku(String(s["part"] ?? "")), partId: String(s["partId"] ?? ""), car: String(s["car"] ?? "") }),
   head: () => ({
     meta: [
       { title: "Схема узла — PartScope" },
@@ -21,8 +21,8 @@ export const Route = createFileRoute("/diagram")({
 });
 
 function Diagram() {
-  const { part, car } = Route.useSearch();
-  const { data, isLoading, isError, error } = useQuery({ queryKey: ["part", part], queryFn: () => getPart(part), enabled: !!part, staleTime: Infinity });
+  const { part, partId, car } = Route.useSearch();
+  const { data, isLoading, isError, error } = useQuery({ queryKey: ["part", part, partId], queryFn: () => getPart(part, partId), enabled: !!part, staleTime: Infinity });
   const [active, setActive] = useState<Hotspot | null>(null);
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<"diagram" | "specs" | "drawings">("diagram");
@@ -53,7 +53,7 @@ function Diagram() {
   return (
     <main className="flex h-dvh flex-col">
       <header className="flex items-center gap-3 border-b px-4 py-3">
-        <Link to="/search" search={{ part }} aria-label="Назад" className="rounded-full p-2 hover:bg-muted"><ArrowLeft className="h-5 w-5" /></Link>
+        <Link to="/search" search={{ part, partId }} aria-label="Назад" className="rounded-full p-2 hover:bg-muted"><ArrowLeft className="h-5 w-5" /></Link>
         <div className="min-w-0 flex-1">
           <div className="truncate font-semibold">{vehicle ? `${vehicle.make} ${vehicle.model}` : "Схема узла"}</div>
           <div className="truncate text-xs text-muted-foreground">{vehicle?.engine} · <span className="font-mono">{part}</span></div>
