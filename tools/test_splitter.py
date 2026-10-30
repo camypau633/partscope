@@ -29,7 +29,7 @@ class TecDocJoinTests(unittest.TestCase):
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
             splitter.load_specs(db, folder, {"1": "2Q2018:1", "203": "2Q2018:203"})
-            rows = list(db.execute("SELECT sku, name, value FROM specs"))
+            rows = list(db.execute("SELECT part_id, name, value FROM specs"))
             self.assertEqual(rows, [("2Q2018:1", "длина", "1040 мм")])
             db.close()
 
@@ -96,9 +96,9 @@ class TecDocJoinTests(unittest.TestCase):
             count = splitter.load_crosses(
                 db, folder, {"100": "2Q2018:100", "200": "2Q2018:200", "300": "2Q2018:300"}
             )
-            pairs = set(db.execute("SELECT source_sku, sku FROM analogues"))
+            pairs = set(db.execute("SELECT source_part_id, target_part_id FROM analogues"))
             self.assertEqual(count, 1)
-            self.assertEqual(pairs, {("SRC100", "TARGET200")})
+            self.assertEqual(pairs, {("2Q2018:100", "2Q2018:200")})
             db.close()
 
     def test_crosses_ignore_blank_target_article_id(self):
@@ -148,11 +148,11 @@ class TecDocJoinTests(unittest.TestCase):
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
             count = splitter.load_crosses(
-                db, folder, {"100": "SRC100", "200": "TARGET200"}
+                db, folder, {"100": "2Q2018:100", "200": "2Q2018:200"}
             )
             self.assertEqual(count, 1)
             self.assertEqual(
-                list(db.execute("SELECT source_sku,sku FROM analogues")),
+                list(db.execute("SELECT source_part_id,target_part_id FROM analogues")),
                 [("2Q2018:100", "2Q2018:200")],
             )
             db.close()
