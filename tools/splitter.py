@@ -357,7 +357,7 @@ def load_crosses(db, folder, sku_by_article):
         target_sku = sku_by_article.get(target_article_id, "")
         source_ok, target_ok = bool(source_sku), bool(target_sku)
         source_match += int(source_ok)
-        target_match += int(target_article_id)
+        target_match += int(bool(target_article_id))
         if source_ok and target_ok:
             both_match += 1
             if source_sku != target_sku:
