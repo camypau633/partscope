@@ -58,7 +58,7 @@ class TecDocJoinTests(unittest.TestCase):
             )
             db.close()
 
-    def test_media_metadata_is_not_mistaken_for_part_link(self):
+    def test_media_metadata_without_resolved_part_is_skipped(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             (folder / "article_mediainformation.csv").write_text(
@@ -130,7 +130,7 @@ class TecDocJoinTests(unittest.TestCase):
             mapping = splitter.load_articles(db, folder, {"10": "BRANDA", "20": "BRANDB"}, "test")
             rows = list(db.execute("SELECT sku,supplier_id,brand FROM parts"))
             self.assertEqual(rows, [("AB12", "10", "BRANDA"), ("AB12", "20", "BRANDB")])
-            self.assertEqual(mapping, {"100": "test:100", "200": "test:200"})
+            self.assertEqual(mapping, {"100": "test:10:100:AB12", "200": "test:20:200:AB12"})
             db.close()
 
     def test_cross_reference_keeps_source_direction(self):
@@ -175,6 +175,136 @@ class TecDocJoinTests(unittest.TestCase):
             shard = json.loads((root / "AB.json").read_text(encoding="utf-8"))
             self.assertEqual(len(shard["AB12"]), 2)
             self.assertEqual({p["part_id"] for p in shard["AB12"]}, {"2Q2018:100", "2Q2018:200"})
+            db.close()
+
+
+    def test_snapshot_media_rebinds_by_supplier_internal_id_and_sku(self):
+        db = sqlite3.connect(":memory:")
+        splitter.create_db(db)
+        db.executemany(
+            """INSERT INTO parts(
+                 part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id,brand,name
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            [
+                ("2Q2018:10:100:AB12", "AB12", "2Q2018", "100", "10", "1000", "BRANDA", "A"),
+                ("2Q2018:20:200:AB12", "AB12", "2Q2018", "200", "20", "2000", "BRANDB", "B"),
+            ],
+        )
+        resolved = splitter.resolve_snapshot_article_map(
+            db, {"900": ("1000", "AB12"), "901": ("2000", "AB12")}
+        )
+        self.assertEqual(
+            resolved,
+            {"900": "2Q2018:10:100:AB12", "901": "2Q2018:20:200:AB12"},
+        )
+        db.close()
+
+    def test_snapshot_media_does_not_guess_ambiguous_same_supplier_sku(self):
+        db = sqlite3.connect(":memory:")
+        splitter.create_db(db)
+        db.executemany(
+            """INSERT INTO parts(
+                 part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id
+               ) VALUES(?,?,?,?,?,?)""",
+            [
+                ("2Q2018:10:100:AB12", "AB12", "2Q2018", "100", "10", "1000"),
+                ("2Q2018:10:101:AB12", "AB12", "2Q2018", "101", "10", "1000"),
+            ],
+        )
+        resolved = splitter.resolve_snapshot_article_map(
+            db, {"900": ("1000", "AB12")}
+        )
+        self.assertEqual(resolved, {})
+        db.close()
+
+    def test_drawings_use_article_id_and_supplier_scoped_image_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "article_mediainformation.csv").write_text(
+                "900\\tPicture\\t\\t1\\t\\t\\t5\\t\\tAB123.jpg\\tFront view\\n",
+                encoding="utf-8",
+            )
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            part_id = "2Q2018:10:100:AB123"
+            db.execute(
+                """INSERT INTO parts(
+                     part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id
+                   ) VALUES(?,?,?,?,?,?)""",
+                (part_id, "AB123", "2Q2018", "100", "10", "1000"),
+            )
+            count = splitter.load_drawings(
+                db, folder, {"900": part_id}, {"images/10/AB/AB123.jpg"}
+            )
+            self.assertEqual(count, 1)
+            url = db.execute("SELECT url FROM drawings WHERE part_id=?", (part_id,)).fetchone()[0]
+            self.assertTrue(url.endswith("/images/10/AB/AB123.jpg"))
+            db.close()
+
+    def test_vehicle_compatibility_joins_article_supplier_and_engine(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            fixtures = {
+                "manufacturers.csv": "1\\tFORD\\t0\\tFord\\t1\\n",
+                "models.csv": "2\\t1\\t2009-01-01\\t2013-01-01\\tFusion (JU_)\\t1\\n",
+                "passengercars.csv": (
+                    "20\\t2000\\t2\\tFORD\\t1\\t2010-01-01\\t2012-12-31"
+                    "\\tFord Fusion\\tFusion 1.4\\t1\\n"
+                ),
+                "engines.csv": "30\\t3000\\t1\\t1.4 TDCi\\t1\\tDiesel\\t2010-01-01\\t2012-12-31\\t1\\n",
+                "passengercars_link_engines.csv": "20\\t30\\n",
+                "articles_linkages.csv": "1\\t2000\\t260\\t1000\\tAB-123\\t0\\t\\n",
+            }
+            for filename, content in fixtures.items():
+                (folder / filename).write_text(content, encoding="utf-8")
+
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            part_id = "2Q2018:10:100:AB123"
+            db.execute(
+                """INSERT INTO parts(
+                     part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id,brand,name
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (part_id, "AB123", "2Q2018", "100", "10", "1000", "BRANDA", "Part"),
+            )
+            count = splitter.load_vehicle_compatibility(db, folder, {"10": "1000"})
+            self.assertEqual(count, 1)
+            self.assertEqual(
+                list(db.execute(
+                    "SELECT brand,model,years,engine FROM compatibility WHERE part_id=?",
+                    (part_id,),
+                )),
+                [("Ford", "Fusion 1.4", "2010-2012", "1.4 TDCi")],
+            )
+            db.close()
+
+    def test_vehicle_compatibility_rejects_duplicate_supplier_sku_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            fixtures = {
+                "manufacturers.csv": "1\\tFORD\\t0\\tFord\\t1\\n",
+                "models.csv": "2\\t1\\t2009-01-01\\t2013-01-01\\tFusion (JU_)\\t1\\n",
+                "passengercars.csv": "20\\t2000\\t2\\tFORD\\t1\\t2010-01-01\\t2012-12-31\\tFord Fusion\\tFusion 1.4\\t1\\n",
+                "engines.csv": "30\\t3000\\t1\\t1.4 TDCi\\t1\\tDiesel\\t2010-01-01\\t2012-12-31\\t1\\n",
+                "passengercars_link_engines.csv": "20\\t30\\n",
+                "articles_linkages.csv": "1\\t2000\\t260\\t1000\\tAB123\\t0\\t\\n",
+            }
+            for filename, content in fixtures.items():
+                (folder / filename).write_text(content, encoding="utf-8")
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            db.executemany(
+                """INSERT INTO parts(
+                     part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id
+                   ) VALUES(?,?,?,?,?,?)""",
+                [
+                    ("2Q2018:10:100:AB123", "AB123", "2Q2018", "100", "10", "1000"),
+                    ("2Q2018:10:101:AB123", "AB123", "2Q2018", "101", "10", "1000"),
+                ],
+            )
+            count = splitter.load_vehicle_compatibility(db, folder, {"10": "1000"})
+            self.assertEqual(count, 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM compatibility").fetchone()[0], 0)
             db.close()
 
 
