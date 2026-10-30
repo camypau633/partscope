@@ -97,8 +97,48 @@ class TecDocJoinTests(unittest.TestCase):
                 db, folder, {"100": "SRC100", "200": "TARGET200", "300": "OTHER300"}
             )
             pairs = set(db.execute("SELECT source_sku, sku FROM analogues"))
-            self.assertEqual(count, 2)
-            self.assertEqual(pairs, {("SRC100", "TARGET200"), ("TARGET200", "SRC100")})
+            self.assertEqual(count, 1)
+            self.assertEqual(pairs, {("SRC100", "TARGET200")})
+            db.close()
+
+    def test_articles_with_same_normalized_sku_are_not_merged(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "articles.csv").write_text(
+                "100\\tAB-12\\t10\\t1\\tBrand A part\\n"
+                "200\\tAB12\\t20\\t1\\tBrand B part\\n",
+                encoding="utf-8",
+            )
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            mapping = splitter.load_articles(db, folder, {"10": "BRANDA", "20": "BRANDB"}, "test")
+            rows = list(db.execute("SELECT sku,supplier_id,brand FROM parts"))
+            self.assertEqual(rows, [("AB12", "10", "BRANDA")])
+            self.assertEqual(mapping, {"100": "AB12"})
+            db.close()
+
+    def test_cross_reference_keeps_source_direction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "articles.csv").write_text(
+                "100\\tSRC-100\\t10\\t1\\tSource part\\n"
+                "200\\tTARGET-200\\t20\\t1\\tTarget part\\n",
+                encoding="utf-8",
+            )
+            (folder / "article_cross_list.csv").write_text(
+                "100\\t20\\tTARGET-200\\n",
+                encoding="utf-8",
+            )
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            count = splitter.load_crosses(
+                db, folder, {"100": "SRC100", "200": "TARGET200"}
+            )
+            self.assertEqual(count, 1)
+            self.assertEqual(
+                list(db.execute("SELECT source_sku,sku FROM analogues")),
+                [("SRC100", "TARGET200")],
+            )
             db.close()
 
 
