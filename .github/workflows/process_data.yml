@@ -177,32 +177,36 @@ jobs:
 
           total = 0
           counts = {"with_specs": 0, "with_analogues": 0, "with_drawings": 0, "with_compatibility": 0}
-          required = {"sku", "brand", "name", "specs", "technical_drawings", "analogues", "compatibility"}
+          required = {"part_id", "sku", "brand", "name", "specs", "technical_drawings", "analogues", "compatibility"}
           for path in files:
               data = json.loads(path.read_text(encoding="utf-8"))
               if not isinstance(data, dict) or not data:
                   raise SystemExit("Empty or invalid JSON shard: " + str(path))
-              for key, record in data.items():
-                  if not isinstance(record, dict) or not required.issubset(record):
-                      raise SystemExit("Invalid part record in " + str(path) + ": " + key)
-                  if record.get("sku") != key or not key:
-                      raise SystemExit("SKU key mismatch in " + str(path) + ": " + key)
-                  if record["specs"]:
-                      counts["with_specs"] += 1
-                  if record["analogues"]:
-                      counts["with_analogues"] += 1
-                  if record["technical_drawings"]:
-                      counts["with_drawings"] += 1
-                  if record["compatibility"]:
-                      counts["with_compatibility"] += 1
-                  total += 1
+              for key, records in data.items():
+                  if not isinstance(records, list) or not records:
+                      raise SystemExit("SKU value must be a non-empty record array: " + key)
+                  for record in records:
+                      if not isinstance(record, dict) or not required.issubset(record):
+                          raise SystemExit("Invalid part record in " + str(path) + ": " + key)
+                      if record.get("sku") != key or not record.get("part_id"):
+                          raise SystemExit("SKU/part identity mismatch in " + str(path) + ": " + key)
+                      if record["specs"]:
+                          counts["with_specs"] += 1
+                      if record["analogues"]:
+                          counts["with_analogues"] += 1
+                      if record["technical_drawings"]:
+                          counts["with_drawings"] += 1
+                      if record["compatibility"]:
+                          counts["with_compatibility"] += 1
+                      total += 1
 
           if total < 1000:
-              raise SystemExit("Expected at least 1,000 records, got " + str(total))
+              raise SystemExit("Expected at least 1,000 article records, got " + str(total))
 
           summary = [
               "status=success",
-              "records=" + str(total),
+              "article_records=" + str(total),
+              "unique_skus=" + str(sum(len(json.loads(p.read_text(encoding="utf-8"))) for p in files)),
               "json_shards=" + str(len(files)),
               "required_fields=" + ",".join(sorted(required)),
               "records_with_specs=" + str(counts["with_specs"]),
