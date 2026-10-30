@@ -104,28 +104,16 @@ def create_db(db):
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL;
         CREATE TABLE parts(
-          sku TEXT PRIMARY KEY, article_id TEXT NOT NULL DEFAULT '',
-          supplier_id TEXT NOT NULL DEFAULT '', brand TEXT NOT NULL DEFAULT '',
-          name TEXT NOT NULL DEFAULT ''
+          part_id TEXT PRIMARY KEY, sku TEXT NOT NULL,
+          source_snapshot TEXT NOT NULL DEFAULT '', article_id TEXT NOT NULL DEFAULT '',
+          supplier_id TEXT NOT NULL DEFAULT '', brand TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT ''
         );
-        CREATE INDEX idx_parts_article_id ON parts(article_id);
-        CREATE TABLE specs(
-          sku TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL,
-          unit TEXT NOT NULL DEFAULT '', UNIQUE(sku,name,value,unit)
-        );
-        CREATE TABLE drawings(
-          sku TEXT NOT NULL, url TEXT NOT NULL, UNIQUE(sku,url)
-        );
-        CREATE TABLE analogues(
-          source_sku TEXT NOT NULL, sku TEXT NOT NULL,
-          UNIQUE(source_sku,sku)
-        );
-        CREATE TABLE compatibility(
-          sku TEXT NOT NULL, brand TEXT NOT NULL DEFAULT '',
-          model TEXT NOT NULL DEFAULT '', years TEXT NOT NULL DEFAULT '',
-          engine TEXT NOT NULL DEFAULT '',
-          UNIQUE(sku,brand,model,years,engine)
-        );
+        CREATE INDEX idx_parts_sku ON parts(sku);
+        CREATE INDEX idx_parts_article_id ON parts(source_snapshot,article_id);
+        CREATE TABLE specs(part_id TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL, unit TEXT NOT NULL DEFAULT '', UNIQUE(part_id,name,value,unit));
+        CREATE TABLE drawings(part_id TEXT NOT NULL, url TEXT NOT NULL, UNIQUE(part_id,url));
+        CREATE TABLE analogues(source_part_id TEXT NOT NULL, target_part_id TEXT NOT NULL, UNIQUE(source_part_id,target_part_id));
+        CREATE TABLE compatibility(part_id TEXT NOT NULL, brand TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', years TEXT NOT NULL DEFAULT '', engine TEXT NOT NULL DEFAULT '', UNIQUE(part_id,brand,model,years,engine));
     """)
 
 
@@ -133,14 +121,9 @@ def load_articles(db, folder, suppliers_by_id, source_label, preserve_existing=F
     path = folder / "articles.csv"
     if not path.exists():
         print("[WARN] Missing " + str(path), file=sys.stderr)
-        return 0
-    count = 0
+        return {}
     article_map = {}
     accepted = 0
-    rejected_collisions = 0
-    # The UI catalogue is keyed by normalized SKU. Until the UI supports a
-    # manufacturer-qualified key, never merge two distinct TecDoc articles
-    # into one SKU record. Keep only unambiguous SKU -> article mappings.
     for row in read_tsv(path):
         if len(row) < 5:
             continue
@@ -148,27 +131,18 @@ def load_articles(db, folder, suppliers_by_id, source_label, preserve_existing=F
         sku = clean_sku(number)
         if not sku or not article_id or not supplier_id:
             continue
-        existing = db.execute(
-            "SELECT article_id,supplier_id FROM parts WHERE sku=?", (sku,)
-        ).fetchone()
-        if existing:
-            # Even same-supplier collisions can represent distinct article IDs
-            # collapsed by punctuation normalization. Do not guess.
-            rejected_collisions += 1
-            continue
+        # TecDoc article IDs are snapshot-local; SKU is deliberately non-unique.
+        part_id = source_label + ":" + article_id
         brand = suppliers_by_id.get(supplier_id, "")
         db.execute(
-            "INSERT INTO parts(sku,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?)",
-            (sku, article_id, supplier_id, brand, name),
+            "INSERT OR IGNORE INTO parts(part_id,sku,source_snapshot,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?,?,?)",
+            (part_id, sku, source_label, article_id, supplier_id, brand, name),
         )
-        article_map[article_id] = sku
-        accepted += 1
+        if db.execute("SELECT changes()").fetchone()[0]:
+            accepted += 1
+        article_map[article_id] = part_id
     db.commit()
-    print("[INFO] Articles from {}: {:,}".format(source_label, accepted))
-    if rejected_collisions:
-        print("[WARN] Rejected {} duplicate normalized SKUs to prevent cross-manufacturer/article merging.".format(
-            rejected_collisions
-        ))
+    print("[INFO] Articles from {}: {:,} unique TecDoc article IDs".format(source_label, accepted))
     return article_map
 
 
@@ -244,7 +218,7 @@ def load_attribute_dictionary(folder):
     return result
 
 
-def load_specs(db, folder, article_to_sku):
+def load_specs(db, folder, article_to_part_id):
     """Import only the verified article_attributes layout.
 
     Observed rows are: article ID, attribute ID, placeholder, label, value,
@@ -261,7 +235,7 @@ def load_specs(db, folder, article_to_sku):
         if len(row) < 5:
             continue
         article_id = row[0].strip()
-        if article_id not in article_to_sku:
+        if article_id not in article_to_part_id:
             continue
         label = row[3].strip()
         value = row[4].strip()
@@ -275,13 +249,13 @@ def load_specs(db, folder, article_to_sku):
             suffix_match = re.search(r"(мм|см|м|дюйм(?:а|ов)?|кг|г)$", value, re.I)
             if suffix_match:
                 unit = suffix_match.group(1)
-        batch.append((article_to_sku[article_id], label, value, unit))
+        batch.append((article_to_part_id[article_id], label, value, unit))
         if len(batch) >= 5000:
-            db.executemany("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)", batch)
+            db.executemany("INSERT OR IGNORE INTO specs(part_id,name,value,unit) VALUES(?,?,?,?)", batch)
             count += len(batch)
             batch = []
     if batch:
-        db.executemany("INSERT OR IGNORE INTO specs(sku,name,value,unit) VALUES(?,?,?,?)", batch)
+        db.executemany("INSERT OR IGNORE INTO specs(part_id,name,value,unit) VALUES(?,?,?,?)", batch)
         count += len(batch)
     db.commit()
     print("[INFO] Verified dimension rows imported: {:,}".format(count))
@@ -307,79 +281,49 @@ def load_drawings(db, folder, article_to_sku, image_paths):
     return 0
 
 
-def load_crosses(db, folder, sku_by_article):
-    """Resolve cross-list rows as source article ID + target supplier ID + target article number."""
+def load_crosses(db, folder, part_id_by_article):
+    """Resolve directed cross-list edges to exact snapshot-local article identities."""
     path = folder / "article_cross_list.csv"
     articles_path = folder / "articles.csv"
-    if not path.exists():
-        print("[INFO] article_cross_list.csv not present; analogues remain empty")
+    if not path.exists() or not articles_path.exists():
+        print("[INFO] Cross-list or articles table missing; cross references skipped")
         return 0
-    if not articles_path.exists():
-        print("[WARN] articles.csv missing; cross references cannot be resolved safely")
-        return 0
-
-    # The source table's observed three-column layout is:
-    # source article ID, target supplier ID, target supplier article number.
-    # The second column is NOT a target article ID. Resolve it with the
-    # compound key (supplier ID, normalized article number) from articles.csv.
     target_by_supplier_number = {}
     ambiguous_targets = set()
     for article in read_tsv(articles_path):
         if len(article) < 3:
             continue
         article_id, number, supplier_id = article[0].strip(), article[1].strip(), article[2].strip()
-        target_sku = sku_by_article.get(article_id, "")
-        normalized_number = clean_sku(number)
-        key = (supplier_id, normalized_number)
-        if not supplier_id or not normalized_number or not target_sku:
+        target_id = part_id_by_article.get(article_id, "")
+        key = (supplier_id, clean_sku(number))
+        if not supplier_id or not key[1] or not target_id:
             continue
         existing = target_by_supplier_number.get(key)
-        if existing and existing != article_id:
-            # Distinct TecDoc article IDs are ambiguous even when their printed
-            # numbers normalize to the same SKU. Never select one arbitrarily.
+        if existing and existing != target_id:
             ambiguous_targets.add(key)
             target_by_supplier_number.pop(key, None)
         elif key not in ambiguous_targets:
-            target_by_supplier_number[key] = article_id
-
-    total = source_match = target_match = both_match = imported = 0
-    unmatched_samples = []
+            target_by_supplier_number[key] = target_id
+    total = imported = 0
     batch = []
     for row in read_tsv(path):
         if len(row) < 3:
             continue
         total += 1
-        source_id, target_supplier_id, target_number = row[0].strip(), row[1].strip(), row[2].strip()
-        source_sku = sku_by_article.get(source_id, "")
-        target_article_id = target_by_supplier_number.get(
-            (target_supplier_id, clean_sku(target_number)), ""
-        )
-        target_sku = sku_by_article.get(target_article_id, "")
-        source_ok, target_ok = bool(source_sku), bool(target_sku)
-        source_match += int(source_ok)
-        target_match += int(bool(target_article_id))
-        if source_ok and target_ok:
-            both_match += 1
-            if source_sku != target_sku:
-                # Preserve TecDoc's source -> target direction. Do not invent
-                # reverse equivalence unless the source explicitly provides it.
-                batch.append((source_sku, target_sku))
-                if len(batch) >= 5000:
-                    db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
-                    imported += len(batch)
-                    batch = []
-        elif len(unmatched_samples) < 8:
-            unmatched_samples.append([source_id, target_supplier_id, target_number])
+        source_id, target_supplier, target_number = row[0].strip(), row[1].strip(), row[2].strip()
+        source_part = part_id_by_article.get(source_id, "")
+        target_part = target_by_supplier_number.get((target_supplier, clean_sku(target_number)), "")
+        if source_part and target_part and source_part != target_part:
+            batch.append((source_part, target_part))
+            if len(batch) >= 5000:
+                db.executemany("INSERT OR IGNORE INTO analogues(source_part_id,target_part_id) VALUES(?,?)", batch)
+                imported += db.execute("SELECT changes()").fetchone()[0]
+                batch = []
     if batch:
-        db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
-        imported += len(batch)
+        db.executemany("INSERT OR IGNORE INTO analogues(source_part_id,target_part_id) VALUES(?,?)", batch)
+        imported += db.execute("SELECT changes()").fetchone()[0]
     db.commit()
-    print("[CROSS-AUDIT] rows: {:,}; source articles matched: {:,}; target supplier+number matched: {:,}; both matched: {:,}".format(
-        total, source_match, target_match, both_match
-    ))
-    if unmatched_samples:
-        print("[CROSS-AUDIT] unresolved examples: {}".format(json.dumps(unmatched_samples, ensure_ascii=False)))
-    print("[INFO] Resolved cross-reference links imported: {:,}".format(imported))
+    print("[CROSS-AUDIT] rows: {:,}; resolved directed article links: {:,}".format(total, imported))
     return imported
 
 def import_normalized(db, input_dir):
@@ -415,76 +359,48 @@ def import_normalized(db, input_dir):
 
 
 def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
-    """Export records grouped into shards; when requested, choose enriched SKUs globally."""
+    """Export SKU shards with arrays because printed part numbers are not unique."""
     output_dir.mkdir(parents=True, exist_ok=True)
     if prioritize_enriched and limit is not None:
         rows = db.execute("""
-            SELECT sku, brand, name FROM parts
-            ORDER BY
-              (EXISTS(SELECT 1 FROM specs s WHERE s.sku=parts.sku)) DESC,
-              (EXISTS(SELECT 1 FROM analogues a WHERE a.source_sku=parts.sku)) DESC,
-              (EXISTS(SELECT 1 FROM drawings d WHERE d.sku=parts.sku)) DESC,
-              (EXISTS(SELECT 1 FROM compatibility c WHERE c.sku=parts.sku)) DESC,
-              sku
-            LIMIT ?
+            SELECT p.part_id,p.sku,p.brand,p.name FROM parts p
+            ORDER BY (EXISTS(SELECT 1 FROM specs s WHERE s.part_id=p.part_id)) DESC,
+                     (EXISTS(SELECT 1 FROM analogues a WHERE a.source_part_id=p.part_id)) DESC,
+                     p.sku,p.part_id LIMIT ?
         """, (limit,)).fetchall()
         selected = {}
-        for sku, brand, name in rows:
-            selected.setdefault(sku[:2], []).append((sku, brand, name))
+        for row in rows:
+            selected.setdefault(row[1][:2], []).append(row)
         prefixes = sorted(selected)
-        print("[INFO] Globally selected {} records for enriched smoke sample.".format(len(rows)))
     else:
-        prefixes = [row[0] for row in db.execute("SELECT DISTINCT substr(sku,1,2) FROM parts ORDER BY 1")]
+        prefixes = [r[0] for r in db.execute("SELECT DISTINCT substr(sku,1,2) FROM parts ORDER BY 1")]
         selected = None
-
     exported = 0
     for prefix in prefixes:
         destination = output_dir / (prefix + ".json")
         temporary = destination.with_suffix(".json.tmp")
-        first = True
-        count = 0
-        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-            stream.write("{")
-            if selected is not None:
-                part_rows = selected[prefix]
-            else:
-                part_rows = db.execute(
-                    "SELECT sku,brand,name FROM parts WHERE substr(sku,1,2)=? ORDER BY sku",
-                    (prefix,)
-                )
-            for sku, brand, name in part_rows:
-                specs = {}
-                for spec_name, value, unit in db.execute(
-                        "SELECT name,value,unit FROM specs WHERE sku=? ORDER BY rowid", (sku,)):
-                    specs[spec_name] = value + ((" " + unit) if unit and unit.lower() not in value.lower() else "")
-                drawings = [r[0] for r in db.execute(
-                    "SELECT url FROM drawings WHERE sku=? ORDER BY rowid", (sku,))]
-                analogues = [{"sku": r[0]} for r in db.execute(
-                    "SELECT sku FROM analogues WHERE source_sku=? ORDER BY sku LIMIT 500", (sku,))]
-                compatibility = [{"brand": r[0], "model": r[1], "years": r[2], "engine": r[3]}
-                                  for r in db.execute(
-                    "SELECT brand,model,years,engine FROM compatibility WHERE sku=? LIMIT 2000", (sku,))]
-                record = {
-                    "sku": sku,
-                    "brand": brand or "",
-                    "name": name or "",
-                    "specs": specs,
-                    "technical_drawings": drawings,
-                    "analogues": analogues,
-                    "compatibility": compatibility,
-                }
-                if not first:
-                    stream.write(",")
-                stream.write(json.dumps(sku, ensure_ascii=False) + ":" +
-                             json.dumps(record, ensure_ascii=False, separators=(",", ":")))
-                first = False
-                count += 1
-                exported += 1
-            stream.write("}")
+        rows = selected[prefix] if selected is not None else db.execute(
+            "SELECT part_id,sku,brand,name FROM parts WHERE substr(sku,1,2)=? ORDER BY sku,part_id", (prefix,)
+        )
+        shard = {}
+        for part_id, sku, brand, name in rows:
+            specs = {}
+            for label, value, unit in db.execute("SELECT name,value,unit FROM specs WHERE part_id=? ORDER BY rowid", (part_id,)):
+                specs[label] = value + ((" " + unit) if unit and unit.lower() not in value.lower() else "")
+            drawings = [r[0] for r in db.execute("SELECT url FROM drawings WHERE part_id=? ORDER BY rowid", (part_id,))]
+            analogues = [{"part_id": r[0], "sku": r[1], "brand": r[2] or "", "name": r[3] or ""}
+                for r in db.execute("""SELECT p.part_id,p.sku,p.brand,p.name FROM analogues a
+                    JOIN parts p ON p.part_id=a.target_part_id WHERE a.source_part_id=? ORDER BY p.sku,p.part_id LIMIT 500""", (part_id,))]
+            compatibility = [{"brand": r[0], "model": r[1], "years": r[2], "engine": r[3]}
+                for r in db.execute("SELECT brand,model,years,engine FROM compatibility WHERE part_id=? LIMIT 2000", (part_id,))]
+            record = {"part_id": part_id, "sku": sku, "brand": brand or "", "name": name or "",
+                      "specs": specs, "technical_drawings": drawings, "analogues": analogues, "compatibility": compatibility}
+            shard.setdefault(sku, []).append(record)
+            exported += 1
+        temporary.write_text(json.dumps(shard, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         temporary.replace(destination)
-        print("[SHARD] {}.json: {:,} SKUs".format(prefix, count))
+        print("[SHARD] {}.json: {:,} article records".format(prefix, sum(len(v) for v in shard.values())))
     return exported, len(prefixes)
-
 
 def inspect_raw_layout(input_dir):
     """Print a bounded structural report before relying on unverified TecDoc column positions."""
@@ -591,10 +507,10 @@ def main():
                 ))
             enriched = db.execute("""
                 SELECT COUNT(*) FROM parts p
-                WHERE EXISTS (SELECT 1 FROM specs s WHERE s.sku=p.sku)
-                   OR EXISTS (SELECT 1 FROM analogues a WHERE a.source_sku=p.sku)
-                   OR EXISTS (SELECT 1 FROM drawings d WHERE d.sku=p.sku)
-                   OR EXISTS (SELECT 1 FROM compatibility c WHERE c.sku=p.sku)
+                WHERE EXISTS (SELECT 1 FROM specs s WHERE s.part_id=p.part_id)
+                   OR EXISTS (SELECT 1 FROM analogues a WHERE a.source_part_id=p.part_id)
+                   OR EXISTS (SELECT 1 FROM drawings d WHERE d.part_id=p.part_id)
+                   OR EXISTS (SELECT 1 FROM compatibility c WHERE c.part_id=p.part_id)
             """).fetchone()[0]
             print("[COVERAGE] parts with at least one linked detail record: {:,}".format(enriched))
             print("[DONE] Exported {:,} records.".format(exported))
