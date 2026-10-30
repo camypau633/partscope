@@ -101,6 +101,22 @@ class TecDocJoinTests(unittest.TestCase):
             self.assertEqual(pairs, {("SRC100", "TARGET200")})
             db.close()
 
+    def test_crosses_ignore_blank_target_article_id(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            (folder / "articles.csv").write_text(
+                "100\\tSRC-100\\t10\\t1\\tSource part\\n", encoding="utf-8"
+            )
+            (folder / "article_cross_list.csv").write_text(
+                "100\\t999\\tUNKNOWN\\n", encoding="utf-8"
+            )
+            db = sqlite3.connect(":memory:")
+            splitter.create_db(db)
+            count = splitter.load_crosses(db, folder, {"100": "SRC100"})
+            self.assertEqual(count, 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM analogues").fetchone()[0], 0)
+            db.close()
+
     def test_articles_with_same_normalized_sku_are_not_merged(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
