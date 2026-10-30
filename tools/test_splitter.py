@@ -127,9 +127,12 @@ class TecDocJoinTests(unittest.TestCase):
             )
             db = sqlite3.connect(":memory:")
             splitter.create_db(db)
-            mapping = splitter.load_articles(db, folder, {"10": "BRANDA", "20": "BRANDB"}, "test")
-            rows = list(db.execute("SELECT sku,supplier_id,brand FROM parts"))
-            self.assertEqual(rows, [("AB12", "10", "BRANDA"), ("AB12", "20", "BRANDB")])
+            mapping = splitter.load_articles(
+                db, folder, {"10": "BRANDA", "20": "BRANDB"}, "test",
+                {"10": "1000", "20": "2000"},
+            )
+            rows = list(db.execute("SELECT sku,supplier_id,brand,supplier_internal_id FROM parts"))
+            self.assertEqual(rows, [("AB12", "10", "BRANDA", "1000"), ("AB12", "20", "BRANDB", "2000")])
             self.assertEqual(mapping, {"100": "test:10:100:AB12", "200": "test:20:200:AB12"})
             db.close()
 
@@ -175,6 +178,8 @@ class TecDocJoinTests(unittest.TestCase):
             shard = json.loads((root / "AB.json").read_text(encoding="utf-8"))
             self.assertEqual(len(shard["AB12"]), 2)
             self.assertEqual({p["part_id"] for p in shard["AB12"]}, {"2Q2018:100", "2Q2018:200"})
+            self.assertEqual({p["manufacturer_id"] for p in shard["AB12"]}, {"10", "20"})
+            self.assertEqual({p["internal_id"] for p in shard["AB12"]}, {"100", "200"})
             db.close()
 
 
