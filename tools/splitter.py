@@ -396,7 +396,6 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
 
     Verified source schema:
       articles_linkages.item_type=1 -> passengercars.InternalID
-      articles_linkages.item_type=3 -> engines.InternalID
       articles_linkages.supplier -> suppliers.internalID
       suppliers.id -> suppliers.internalID -> articles.Supplier
       articles_linkages.article -> articles.DataSupplierArticleNumber
@@ -429,7 +428,6 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
             model_names[(row[0].strip(), row[1].strip())] = row[4].strip()
 
     engines_by_id = {}
-    engines_by_internal = {}
     for row in all_rows(folder, "engines.csv"):
         if len(row) < 6 or not row[0]:
             continue
@@ -439,16 +437,11 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
             "name": (row[3].strip() or row[5].strip()),
         }
         engines_by_id[engine["id"]] = engine
-        if engine["internal_id"]:
-            engines_by_internal.setdefault(engine["internal_id"], []).append(engine)
-
     car_engines = {}
-    engine_cars = {}
     for row in all_rows(folder, "passengercars_link_engines.csv"):
         if len(row) < 2 or not row[0] or not row[1]:
             continue
         car_engines.setdefault(row[0].strip(), set()).add(row[1].strip())
-        engine_cars.setdefault(row[1].strip(), set()).add(row[0].strip())
 
     cars_by_internal = {}
     cars_by_id = {}
