@@ -136,50 +136,39 @@ def load_articles(db, folder, suppliers_by_id, source_label, preserve_existing=F
         return 0
     count = 0
     article_map = {}
-    batch = []
-    # TecDoc article rows in these exports are tab-separated and headerless:
-    # article ID, article number, supplier ID, generic-article ID, description...
+    accepted = 0
+    rejected_collisions = 0
+    # The UI catalogue is keyed by normalized SKU. Until the UI supports a
+    # manufacturer-qualified key, never merge two distinct TecDoc articles
+    # into one SKU record. Keep only unambiguous SKU -> article mappings.
     for row in read_tsv(path):
         if len(row) < 5:
             continue
         article_id, number, supplier_id, _generic_id, name = row[:5]
         sku = clean_sku(number)
-        if not sku:
+        if not sku or not article_id or not supplier_id:
+            continue
+        existing = db.execute(
+            "SELECT article_id,supplier_id FROM parts WHERE sku=?", (sku,)
+        ).fetchone()
+        if existing:
+            # Even same-supplier collisions can represent distinct article IDs
+            # collapsed by punctuation normalization. Do not guess.
+            rejected_collisions += 1
             continue
         brand = suppliers_by_id.get(supplier_id, "")
+        db.execute(
+            "INSERT INTO parts(sku,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?)",
+            (sku, article_id, supplier_id, brand, name),
+        )
         article_map[article_id] = sku
-        batch.append((sku, article_id, supplier_id, brand, name))
-        if len(batch) >= 5000:
-            if preserve_existing:
-                db.executemany("INSERT OR IGNORE INTO parts(sku,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?)", batch)
-            else:
-                db.executemany("""
-                    INSERT INTO parts(sku,article_id,supplier_id,brand,name)
-                    VALUES(?,?,?,?,?)
-                    ON CONFLICT(sku) DO UPDATE SET
-                      article_id=CASE WHEN excluded.article_id='' THEN parts.article_id ELSE excluded.article_id END,
-                      supplier_id=CASE WHEN excluded.supplier_id='' THEN parts.supplier_id ELSE excluded.supplier_id END,
-                      brand=CASE WHEN excluded.brand='' THEN parts.brand ELSE excluded.brand END,
-                      name=CASE WHEN excluded.name='' THEN parts.name ELSE excluded.name END
-                """, batch)
-            count += len(batch)
-            batch = []
-    if batch:
-        if preserve_existing:
-            db.executemany("INSERT OR IGNORE INTO parts(sku,article_id,supplier_id,brand,name) VALUES(?,?,?,?,?)", batch)
-        else:
-            db.executemany("""
-                INSERT INTO parts(sku,article_id,supplier_id,brand,name)
-                VALUES(?,?,?,?,?)
-                ON CONFLICT(sku) DO UPDATE SET
-                  article_id=CASE WHEN excluded.article_id='' THEN parts.article_id ELSE excluded.article_id END,
-                  supplier_id=CASE WHEN excluded.supplier_id='' THEN parts.supplier_id ELSE excluded.supplier_id END,
-                  brand=CASE WHEN excluded.brand='' THEN parts.brand ELSE excluded.brand END,
-                  name=CASE WHEN excluded.name='' THEN parts.name ELSE excluded.name END
-            """, batch)
-        count += len(batch)
+        accepted += 1
     db.commit()
-    print("[INFO] Articles from {}: {:,}".format(source_label, count))
+    print("[INFO] Articles from {}: {:,}".format(source_label, accepted))
+    if rejected_collisions:
+        print("[WARN] Rejected {} duplicate normalized SKUs to prevent cross-manufacturer/article merging.".format(
+            rejected_collisions
+        ))
     return article_map
 
 
@@ -339,19 +328,19 @@ def load_crosses(db, folder, sku_by_article):
         if len(article) < 3:
             continue
         article_id, number, supplier_id = article[0].strip(), article[1].strip(), article[2].strip()
-        target_sku = sku_by_article.get(article_id, clean_sku(number))
+        target_sku = sku_by_article.get(article_id, "")
         normalized_number = clean_sku(number)
         key = (supplier_id, normalized_number)
         if not supplier_id or not normalized_number or not target_sku:
             continue
         existing = target_by_supplier_number.get(key)
-        if existing and existing != target_sku:
-            # Normalization can collapse distinct printed numbers (e.g. punctuation
-            # variants). Never pick an arbitrary target when the compound key collides.
+        if existing and existing != article_id:
+            # Distinct TecDoc article IDs are ambiguous even when their printed
+            # numbers normalize to the same SKU. Never select one arbitrarily.
             ambiguous_targets.add(key)
             target_by_supplier_number.pop(key, None)
         elif key not in ambiguous_targets:
-            target_by_supplier_number[key] = target_sku
+            target_by_supplier_number[key] = article_id
 
     total = source_match = target_match = both_match = imported = 0
     unmatched_samples = []
@@ -362,14 +351,19 @@ def load_crosses(db, folder, sku_by_article):
         total += 1
         source_id, target_supplier_id, target_number = row[0].strip(), row[1].strip(), row[2].strip()
         source_sku = sku_by_article.get(source_id, "")
-        target_sku = target_by_supplier_number.get((target_supplier_id, clean_sku(target_number)), "")
+        target_article_id = target_by_supplier_number.get(
+            (target_supplier_id, clean_sku(target_number)), ""
+        )
+        target_sku = sku_by_article.get(target_article_id, "")
         source_ok, target_ok = bool(source_sku), bool(target_sku)
         source_match += int(source_ok)
-        target_match += int(target_ok)
+        target_match += int(target_article_id)
         if source_ok and target_ok:
             both_match += 1
             if source_sku != target_sku:
-                batch.extend(((source_sku, target_sku), (target_sku, source_sku)))
+                # Preserve TecDoc's source -> target direction. Do not invent
+                # reverse equivalence unless the source explicitly provides it.
+                batch.append((source_sku, target_sku))
                 if len(batch) >= 5000:
                     db.executemany("INSERT OR IGNORE INTO analogues(source_sku,sku) VALUES(?,?)", batch)
                     imported += len(batch)
