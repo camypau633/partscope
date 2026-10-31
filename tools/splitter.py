@@ -755,18 +755,50 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
             "SELECT part_id,sku,brand,name,supplier_id,article_id,source_snapshot FROM parts WHERE substr(sku,1,2)=? ORDER BY sku,part_id", (prefix,)
         )
         shard = {}
+        rows = list(rows)
+        part_ids = [row[0] for row in rows]
+        specs_by_part = {}
+        drawings_by_part = {}
+        analogues_by_part = {}
+        compatibility_by_part = {}
+        db.execute("CREATE TEMP TABLE IF NOT EXISTS export_part_ids(part_id TEXT PRIMARY KEY)")
+        db.execute("DELETE FROM export_part_ids")
+        db.executemany("INSERT INTO export_part_ids(part_id) VALUES(?)", [(part_id,) for part_id in part_ids])
+        for part_id, label, value, unit in db.execute(
+            """SELECT s.part_id,s.name,s.value,s.unit FROM specs s
+               JOIN export_part_ids x ON x.part_id=s.part_id ORDER BY s.rowid"""
+        ):
+            specs_by_part.setdefault(part_id, {})[label] = value + (
+                (" " + unit) if unit and unit.lower() not in value.lower() else ""
+            )
+        for part_id, url in db.execute(
+            """SELECT d.part_id,d.url FROM drawings d
+               JOIN export_part_ids x ON x.part_id=d.part_id ORDER BY d.rowid"""
+        ):
+            drawings_by_part.setdefault(part_id, []).append(url)
+        for part_id, target_id, sku, brand, name in db.execute(
+            """SELECT a.source_part_id,p.part_id,p.sku,p.brand,p.name
+               FROM analogues a JOIN export_part_ids x ON x.part_id=a.source_part_id
+               JOIN parts p ON p.part_id=a.target_part_id
+               ORDER BY a.source_part_id,p.sku,p.part_id"""
+        ):
+            bucket = analogues_by_part.setdefault(part_id, [])
+            if len(bucket) < 500:
+                bucket.append({"part_id": target_id, "sku": sku, "brand": brand or "", "name": name or ""})
+        for part_id, brand, model, years, engine in db.execute(
+            """SELECT c.part_id,c.brand,c.model,c.years,c.engine FROM compatibility c
+               JOIN export_part_ids x ON x.part_id=c.part_id ORDER BY c.rowid"""
+        ):
+            bucket = compatibility_by_part.setdefault(part_id, [])
+            if len(bucket) < 2000:
+                bucket.append({"brand": brand, "model": model, "years": years, "engine": engine})
         for part_id, sku, brand, name, manufacturer_id, internal_id, source_snapshot in rows:
             if exported == 0 or (exported + 1) % 1000 == 0:
                 progress("JSON export", exported + 1, started, interval=1000)
-            specs = {}
-            for label, value, unit in db.execute("SELECT name,value,unit FROM specs WHERE part_id=? ORDER BY rowid", (part_id,)):
-                specs[label] = value + ((" " + unit) if unit and unit.lower() not in value.lower() else "")
-            drawings = [r[0] for r in db.execute("SELECT url FROM drawings WHERE part_id=? ORDER BY rowid", (part_id,))]
-            analogues = [{"part_id": r[0], "sku": r[1], "brand": r[2] or "", "name": r[3] or ""}
-                for r in db.execute("""SELECT p.part_id,p.sku,p.brand,p.name FROM analogues a
-                    JOIN parts p ON p.part_id=a.target_part_id WHERE a.source_part_id=? ORDER BY p.sku,p.part_id LIMIT 500""", (part_id,))]
-            compatibility = [{"brand": r[0], "model": r[1], "years": r[2], "engine": r[3]}
-                for r in db.execute("SELECT brand,model,years,engine FROM compatibility WHERE part_id=? LIMIT 2000", (part_id,))]
+            specs = specs_by_part.get(part_id, {})
+            drawings = drawings_by_part.get(part_id, [])
+            analogues = analogues_by_part.get(part_id, [])
+            compatibility = compatibility_by_part.get(part_id, [])
             record = {"part_id": part_id, "source_snapshot": source_snapshot or "", "manufacturer_id": manufacturer_id or "",
                       "internal_id": internal_id or "", "sku": sku, "brand": brand or "", "name": name or "",
                       "specs": specs, "technical_drawings": drawings, "analogues": analogues, "compatibility": compatibility}
