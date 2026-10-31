@@ -174,7 +174,7 @@ jobs:
       - name: Build and validate a 1,000-part catalogue sample
         run: |
           set -euo pipefail
-          python tools/splitter.py --input raw_data --output build-smoke/catalogue --limit 1000 --clean-output --prioritize-enriched | tee catalogue-smoke-build.log
+          python -u tools/splitter.py --input raw_data --output build-smoke/catalogue --limit 1000 --clean-output --prioritize-enriched 2>&1 | tee catalogue-smoke-build.log
           python - <<'PY'
           import json
           from pathlib import Path
@@ -237,6 +237,7 @@ jobs:
           PY
 
       - name: Upload catalogue smoke-test artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: partscope-catalogue-smoke-test
@@ -248,6 +249,7 @@ jobs:
           retention-days: 7
 
       - name: Upload TecDoc layout report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tecdoc-layout-report
