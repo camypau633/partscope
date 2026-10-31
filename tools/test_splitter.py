@@ -345,7 +345,7 @@ class TecDocJoinTests(unittest.TestCase):
             self.assertEqual(count, 1)
             db.close()
 
-    def test_unverified_item_type_is_not_misclassified_as_engine(self):
+    def test_item_type_three_resolves_engine_to_compatible_vehicle(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary)
             fixtures = {
@@ -354,7 +354,6 @@ class TecDocJoinTests(unittest.TestCase):
                 "passengercars.csv": "20\t2000\t2\tFORD\t1\t2010-01-01\t2012-12-31\tFord Fusion\tFusion 1.4\t1\n",
                 "engines.csv": "30\t3000\t1\t1.4 TDCi\t1\tDiesel\t2010-01-01\t2012-12-31\t1\n",
                 "passengercars_link_engines.csv": "20\t30\n",
-                # Type 3 has not been confirmed as an engine linkage in source docs.
                 "articles_linkages.csv": "3\t3000\t260\t1000\tAB123\t0\t\n",
             }
             for filename, content in fixtures.items():
@@ -368,8 +367,13 @@ class TecDocJoinTests(unittest.TestCase):
                 ("2Q2018:10:100:AB123", "AB123", "2Q2018", "100", "10", "1000"),
             )
             count = splitter.load_vehicle_compatibility(db, folder, {"10": "1000"})
-            self.assertEqual(count, 0)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM compatibility").fetchone()[0], 0)
+            self.assertEqual(count, 1)
+            self.assertEqual(
+                list(db.execute(
+                    "SELECT brand,model,years,engine FROM compatibility"
+                )),
+                [("Ford", "Fusion 1.4", "2010-2012", "1.4 TDCi")],
+            )
             db.close()
 
     def test_vehicle_compatibility_rejects_duplicate_supplier_sku_identity(self):
