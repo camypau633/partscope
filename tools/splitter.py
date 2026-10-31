@@ -441,10 +441,13 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
         if engine["internal_id"]:
             engines_by_internal.setdefault(engine["internal_id"], []).append(engine)
     car_engines = {}
+    engine_cars = {}
     for row in all_rows(folder, "passengercars_link_engines.csv"):
         if len(row) < 2 or not row[0] or not row[1]:
             continue
-        car_engines.setdefault(row[0].strip(), set()).add(row[1].strip())
+        car_id, engine_id = row[0].strip(), row[1].strip()
+        car_engines.setdefault(car_id, set()).add(engine_id)
+        engine_cars.setdefault(engine_id, set()).add(car_id)
 
     cars_by_internal = {}
     cars_by_id = {}
@@ -537,9 +540,10 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
             if len(matched_engines) != 1:
                 continue
             engine = matched_engines[0]
-            for car_id, linked_engine_ids in car_engines.items():
-                if engine["id"] not in linked_engine_ids:
-                    continue
+            # Use the reverse index built once above. Scanning every car for
+            # every engine linkage made this stage O(linkages * vehicles).
+            # The indexed lookup is proportional only to actual engine fitments.
+            for car_id in engine_cars.get(engine["id"], ()):
                 vehicle = cars_by_id.get(car_id)
                 if vehicle:
                     add_compatibility(part_id, vehicle, engine["name"])
