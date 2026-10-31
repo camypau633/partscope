@@ -146,7 +146,7 @@ def load_supplier_internal_ids(folder):
     return result
 
 
-def load_articles(db, folder, suppliers_by_id, source_label, supplier_internal_ids=None, preserve_existing=False):
+def load_articles(db, folder, suppliers_by_id, source_label, supplier_internal_ids=None, preserve_existing=False, limit=None):
     path = folder / "articles.csv"
     if not path.exists():
         print("[WARN] Missing " + str(path), file=sys.stderr)
@@ -155,32 +155,47 @@ def load_articles(db, folder, suppliers_by_id, source_label, supplier_internal_i
     article_map = {}
     accepted = 0
     processed = 0
+    batch = []
     started = time.monotonic()
     for row in read_tsv(path):
-        processed += 1
-        progress("articles {}".format(source_label), processed, started)
         if len(row) < 5:
             continue
         article_id, number, supplier_id, _generic_id, name = row[:5]
         sku = clean_sku(number)
         if not sku or not article_id or not supplier_id:
             continue
-        # Keep manufacturer, snapshot-local article ID and normalized article
-        # number in the identity. SKU alone is never a primary key.
+        processed += 1
+        progress("articles {}".format(source_label), processed, started, interval=10000)
         supplier_internal_id = supplier_internal_ids.get(supplier_id, "")
         part_id = "{}:{}:{}:{}".format(source_label, supplier_id, article_id, sku)
         brand = suppliers_by_id.get(supplier_id, "")
-        db.execute(
+        batch.append((part_id, sku, source_label, article_id, supplier_id,
+                      supplier_internal_id, brand, name))
+        article_map[article_id] = part_id
+        if len(batch) >= 5000:
+            before = db.total_changes
+            db.executemany(
+                """INSERT OR IGNORE INTO parts(
+                     part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id,brand,name
+                   ) VALUES(?,?,?,?,?,?,?,?)""", batch
+            )
+            accepted += db.total_changes - before
+            batch = []
+        if limit is not None and processed >= limit:
+            break
+    if batch:
+        before = db.total_changes
+        db.executemany(
             """INSERT OR IGNORE INTO parts(
                  part_id,sku,source_snapshot,article_id,supplier_id,supplier_internal_id,brand,name
-               ) VALUES(?,?,?,?,?,?,?,?)""",
-            (part_id, sku, source_label, article_id, supplier_id, supplier_internal_id, brand, name),
+               ) VALUES(?,?,?,?,?,?,?,?)""", batch
         )
-        if db.execute("SELECT changes()").fetchone()[0]:
-            accepted += 1
-        article_map[article_id] = part_id
+        accepted += db.total_changes - before
     db.commit()
-    print("[INFO] Articles from {}: {:,} unique manufacturer/article/SKU identities".format(source_label, accepted))
+    print("[INFO] Articles from {}: {:,} imported; {:,} valid rows scanned{}".format(
+        source_label, accepted, processed,
+        " (sample limit {})".format(limit) if limit is not None else ""
+    ), flush=True)
     return article_map
 
 
@@ -517,17 +532,28 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
     total = imported = ambiguous = unsupported_types = engine_linkages = engine_vehicle_matches = 0
     started = time.monotonic()
 
+    compatibility_batch = []
+
+    def flush_compatibility():
+        nonlocal imported, compatibility_batch
+        if not compatibility_batch:
+            return
+        before = db.total_changes
+        db.executemany(
+            """INSERT OR IGNORE INTO compatibility(part_id,brand,model,years,engine)
+               VALUES(?,?,?,?,?)""", compatibility_batch
+        )
+        imported += db.total_changes - before
+        compatibility_batch = []
+
     def add_compatibility(part_id, vehicle, engine_name=""):
-        nonlocal imported
         if not part_id:
             return
-        cursor = db.execute(
-            """INSERT OR IGNORE INTO compatibility(part_id,brand,model,years,engine)
-               VALUES(?,?,?,?,?)""",
-            (part_id, vehicle["brand"], vehicle["model"], vehicle["years"], engine_name),
+        compatibility_batch.append(
+            (part_id, vehicle["brand"], vehicle["model"], vehicle["years"], engine_name)
         )
-        if cursor.rowcount > 0:
-            imported += 1
+        if len(compatibility_batch) >= 5000:
+            flush_compatibility()
 
     for row in all_rows(folder, "articles_linkages.csv"):
         if len(row) < 5:
@@ -584,6 +610,7 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
         else:
             unsupported_types += 1
 
+    flush_compatibility()
     db.commit()
     print("[VEHICLE-AUDIT] article linkage rows: {:,}; compatibility rows imported: {:,}; ambiguous part matches: {:,}; engine linkages: {:,}; engine-to-car matches: {:,}; unsupported item types: {:,}".format(
         total, imported, ambiguous, engine_linkages, engine_vehicle_matches, unsupported_types
@@ -839,7 +866,8 @@ def main():
                 supplier_internal_ids_2q = timed_stage("2Q2018 supplier internal IDs", load_supplier_internal_ids, text_dir)
                 article_map_2q = timed_stage(
                     "2Q2018 article import", load_articles,
-                    db, text_dir, suppliers, "2Q2018", supplier_internal_ids_2q
+                    db, text_dir, suppliers, "2Q2018", supplier_internal_ids_2q,
+                    limit=args.limit
                 )
                 timed_stage("technical specifications", load_specs, db, text_dir, article_map_2q)
                 timed_stage("vehicle and engine compatibility", load_vehicle_compatibility, db, text_dir, supplier_internal_ids_2q)
@@ -850,7 +878,8 @@ def main():
                 suppliers_1q = timed_stage("1Q2019 supplier mapping", load_suppliers, graphics_dir, article_supplier_ids(graphics_dir))
                 article_map_1q = timed_stage(
                     "1Q2019 article import", load_articles,
-                    db, graphics_dir, suppliers_1q, "1Q2019", supplier_internal_ids_1q
+                    db, graphics_dir, suppliers_1q, "1Q2019", supplier_internal_ids_1q,
+                    limit=args.limit
                 )
                 article_identity_1q = timed_stage(
                     "1Q2019 media identity index", load_article_identity_index,
