@@ -385,7 +385,7 @@ def load_drawings(db, folder, article_to_part_id, image_paths, article_supplier_
         db.executemany("INSERT OR IGNORE INTO drawings(part_id,url) VALUES(?,?)", batch)
         count += len(batch)
     db.commit()
-    print("[MEDIA-AUDIT] drawings linked: {:,}; no 2Q2018 article match: {:,}; image absent from manifest: {:,}".format(
+    print("[MEDIA-AUDIT] drawings linked: {:,}; media article without imported identity: {:,}; image absent from manifest: {:,}".format(
         count, missing_article, missing_image
     ))
     return count
@@ -428,6 +428,7 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
             model_names[(row[0].strip(), row[1].strip())] = row[4].strip()
 
     engines_by_id = {}
+    engines_by_internal = {}
     for row in all_rows(folder, "engines.csv"):
         if len(row) < 6 or not row[0]:
             continue
@@ -437,6 +438,8 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
             "name": (row[3].strip() or row[5].strip()),
         }
         engines_by_id[engine["id"]] = engine
+        if engine["internal_id"]:
+            engines_by_internal.setdefault(engine["internal_id"], []).append(engine)
     car_engines = {}
     for row in all_rows(folder, "passengercars_link_engines.csv"):
         if len(row) < 2 or not row[0] or not row[1]:
@@ -477,7 +480,7 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
         if supplier_internal_id:
             parts_by_supplier_sku.setdefault((supplier_internal_id, sku), []).append(part_id)
 
-    total = imported = ambiguous = unsupported_types = 0
+    total = imported = ambiguous = unsupported_types = engine_linkages = engine_vehicle_matches = 0
 
     def add_compatibility(part_id, vehicle, engine_name=""):
         nonlocal imported
@@ -514,8 +517,6 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
 
         if item_type == "1":
             vehicles = cars_by_internal.get(item_id, [])
-            # InternalID is expected to identify one vehicle. If the export
-            # contains duplicates, do not spread one part across several cars.
             if len(vehicles) != 1:
                 continue
             for vehicle in vehicles:
@@ -530,16 +531,25 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
                         add_compatibility(part_id, vehicle, engine_name)
                 else:
                     add_compatibility(part_id, vehicle)
+        elif item_type == "3":
+            engine_linkages += 1
+            matched_engines = engines_by_internal.get(item_id, [])
+            if len(matched_engines) != 1:
+                continue
+            engine = matched_engines[0]
+            for car_id, linked_engine_ids in car_engines.items():
+                if engine["id"] not in linked_engine_ids:
+                    continue
+                vehicle = cars_by_id.get(car_id)
+                if vehicle:
+                    add_compatibility(part_id, vehicle, engine["name"])
+                    engine_vehicle_matches += 1
         else:
-            # Only item_type=1 (PassengerCar) is explicitly confirmed by the
-            # source query examples. Other item_type values are not guessed:
-            # they may represent commercial vehicles, motorcycles, or other
-            # TecDoc trees, not necessarily engines.
             unsupported_types += 1
 
     db.commit()
-    print("[VEHICLE-AUDIT] article linkage rows: {:,}; passenger-car matches: {:,}; ambiguous part matches: {:,}; unverified item types: {:,}".format(
-        total, imported, ambiguous, unsupported_types
+    print("[VEHICLE-AUDIT] article linkage rows: {:,}; compatibility rows imported: {:,}; ambiguous part matches: {:,}; engine linkages: {:,}; engine-to-car matches: {:,}; unsupported item types: {:,}".format(
+        total, imported, ambiguous, engine_linkages, engine_vehicle_matches, unsupported_types
     ))
     return imported
 
@@ -652,7 +662,7 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
     output_dir.mkdir(parents=True, exist_ok=True)
     if prioritize_enriched and limit is not None:
         rows = db.execute("""
-            SELECT p.part_id,p.sku,p.brand,p.name,p.supplier_id,p.article_id FROM parts p
+            SELECT p.part_id,p.sku,p.brand,p.name,p.supplier_id,p.article_id,p.source_snapshot FROM parts p
             ORDER BY (EXISTS(SELECT 1 FROM compatibility c WHERE c.part_id=p.part_id)) DESC,
                      (EXISTS(SELECT 1 FROM drawings d WHERE d.part_id=p.part_id)) DESC,
                      (EXISTS(SELECT 1 FROM specs s WHERE s.part_id=p.part_id)) DESC,
@@ -671,10 +681,10 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
         destination = output_dir / (prefix + ".json")
         temporary = destination.with_suffix(".json.tmp")
         rows = selected[prefix] if selected is not None else db.execute(
-            "SELECT part_id,sku,brand,name,supplier_id,article_id FROM parts WHERE substr(sku,1,2)=? ORDER BY sku,part_id", (prefix,)
+            "SELECT part_id,sku,brand,name,supplier_id,article_id,source_snapshot FROM parts WHERE substr(sku,1,2)=? ORDER BY sku,part_id", (prefix,)
         )
         shard = {}
-        for part_id, sku, brand, name, manufacturer_id, internal_id in rows:
+        for part_id, sku, brand, name, manufacturer_id, internal_id, source_snapshot in rows:
             specs = {}
             for label, value, unit in db.execute("SELECT name,value,unit FROM specs WHERE part_id=? ORDER BY rowid", (part_id,)):
                 specs[label] = value + ((" " + unit) if unit and unit.lower() not in value.lower() else "")
@@ -684,7 +694,7 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
                     JOIN parts p ON p.part_id=a.target_part_id WHERE a.source_part_id=? ORDER BY p.sku,p.part_id LIMIT 500""", (part_id,))]
             compatibility = [{"brand": r[0], "model": r[1], "years": r[2], "engine": r[3]}
                 for r in db.execute("SELECT brand,model,years,engine FROM compatibility WHERE part_id=? LIMIT 2000", (part_id,))]
-            record = {"part_id": part_id, "manufacturer_id": manufacturer_id or "",
+            record = {"part_id": part_id, "source_snapshot": source_snapshot or "", "manufacturer_id": manufacturer_id or "",
                       "internal_id": internal_id or "", "sku": sku, "brand": brand or "", "name": name or "",
                       "specs": specs, "technical_drawings": drawings, "analogues": analogues, "compatibility": compatibility}
             shard.setdefault(sku, []).append(record)
@@ -790,15 +800,18 @@ def main():
                 # Media IDs belong to the 1Q2019 snapshot. Rebind them through
                 # stable supplier InternalID + normalized SKU, never by SKU alone.
                 supplier_internal_ids_1q = load_supplier_internal_ids(graphics_dir)
+                suppliers_1q = load_suppliers(graphics_dir, article_supplier_ids(graphics_dir))
+                article_map_1q = load_articles(
+                    db, graphics_dir, suppliers_1q, "1Q2019", supplier_internal_ids_1q
+                )
                 article_identity_1q = load_article_identity_index(
                     graphics_dir, supplier_internal_ids_1q
                 )
-                article_map_1q_to_2q = resolve_snapshot_article_map(db, article_identity_1q)
                 article_supplier_ids_1q = {
                     article_id: identity[2] for article_id, identity in article_identity_1q.items()
                 }
                 image_manifest = load_image_manifest(graphics_dir / "images_manifest.txt")
-                load_drawings(db, graphics_dir, article_map_1q_to_2q, image_manifest,
+                load_drawings(db, graphics_dir, article_map_1q, image_manifest,
                               article_supplier_ids_1q)
                 load_crosses(db, text_dir, article_map_2q)
             count = db.execute("SELECT COUNT(*) FROM parts").fetchone()[0]
