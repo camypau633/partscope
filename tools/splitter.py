@@ -244,12 +244,17 @@ def load_suppliers(folder, expected_supplier_ids=None):
     return result
 
 
-def article_supplier_ids(folder):
+def article_supplier_ids(folder, limit=None):
     """Collect supplier IDs from the observed articles.csv field at index 2."""
-    return {
-        row[2] for row in all_rows(folder, "articles.csv")
-        if len(row) >= 3 and row[2].isdigit()
-    }
+    result = set()
+    accepted = 0
+    for row in all_rows(folder, "articles.csv"):
+        if len(row) >= 3 and row[2].isdigit():
+            result.add(row[2])
+            accepted += 1
+            if limit is not None and accepted >= limit:
+                break
+    return result
 
 
 def find_article_id(row, known_ids):
@@ -900,7 +905,7 @@ def main():
                 if not text_dir.is_dir() or not graphics_dir.is_dir():
                     print("[ERROR] Expected raw_data/2Q2018 and raw_data/1Q2019.", file=sys.stderr)
                     return 2
-                suppliers = timed_stage("2Q2018 supplier mapping", load_suppliers, text_dir, article_supplier_ids(text_dir))
+                suppliers = timed_stage("2Q2018 supplier mapping", load_suppliers, text_dir, article_supplier_ids(text_dir, args.limit))
                 supplier_internal_ids_2q = timed_stage("2Q2018 supplier internal IDs", load_supplier_internal_ids, text_dir)
                 article_map_2q = timed_stage(
                     "2Q2018 article import", load_articles,
@@ -913,7 +918,7 @@ def main():
                 # Media IDs belong to the 1Q2019 snapshot. Rebind them through
                 # stable supplier InternalID + normalized SKU, never by SKU alone.
                 supplier_internal_ids_1q = timed_stage("1Q2019 supplier internal IDs", load_supplier_internal_ids, graphics_dir)
-                suppliers_1q = timed_stage("1Q2019 supplier mapping", load_suppliers, graphics_dir, article_supplier_ids(graphics_dir))
+                suppliers_1q = timed_stage("1Q2019 supplier mapping", load_suppliers, graphics_dir, article_supplier_ids(graphics_dir, args.limit))
                 article_map_1q = timed_stage(
                     "1Q2019 article import", load_articles,
                     db, graphics_dir, suppliers_1q, "1Q2019", supplier_internal_ids_1q,
