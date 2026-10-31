@@ -320,17 +320,23 @@ def load_specs(db, folder, article_to_part_id):
     return count
 
 
-def load_article_identity_index(folder, supplier_internal_ids):
-    """Map 1Q2019 article IDs to stable supplier InternalID + normalized SKU."""
+def load_article_identity_index(folder, supplier_internal_ids, article_ids=None):
+    """Map selected 1Q2019 article IDs to stable supplier InternalID + SKU."""
     result = {}
+    wanted = set(article_ids) if article_ids is not None else None
     for row in all_rows(folder, "articles.csv"):
         if len(row) < 3:
+            continue
+        article_id = row[0].strip()
+        if wanted is not None and article_id not in wanted:
             continue
         article_id, number, supplier_id = row[0].strip(), row[1].strip(), row[2].strip()
         supplier_internal_id = supplier_internal_ids.get(supplier_id, "")
         sku = clean_sku(number)
         if article_id and supplier_internal_id and sku:
             result[article_id] = (supplier_internal_id, sku, supplier_id)
+        if wanted is not None and len(result) >= len(wanted):
+            break
     return result
 
 
@@ -915,7 +921,8 @@ def main():
                 )
                 article_identity_1q = timed_stage(
                     "1Q2019 media identity index", load_article_identity_index,
-                    graphics_dir, supplier_internal_ids_1q
+                    graphics_dir, supplier_internal_ids_1q,
+                    article_ids=set(article_map_1q) if args.limit is not None else None
                 )
                 article_supplier_ids_1q = {
                     article_id: identity[2] for article_id, identity in article_identity_1q.items()
