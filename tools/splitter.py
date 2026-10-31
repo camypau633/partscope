@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -24,6 +25,24 @@ DIMENSION_RE = re.compile(
     re.IGNORECASE,
 )
 IMAGE_BASE = "https://raw.githubusercontent.com/tecdocSQL/tecdocdatabase1Q2019/main/"
+
+
+def progress(stage, processed, started, interval=100000):
+    if processed == 1 or processed % interval == 0:
+        elapsed = time.monotonic() - started
+        print("[PROGRESS] {}: {:,} rows/items processed; elapsed {:.1f}s".format(
+            stage, processed, elapsed
+        ), flush=True)
+
+
+def timed_stage(label, function, *args, **kwargs):
+    started = time.monotonic()
+    print("[STAGE-START] {}".format(label), flush=True)
+    result = function(*args, **kwargs)
+    print("[STAGE-DONE] {} in {:.1f}s".format(
+        label, time.monotonic() - started
+    ), flush=True)
+    return result
 
 
 def clean_sku(value):
@@ -115,6 +134,10 @@ def create_db(db):
         CREATE TABLE drawings(part_id TEXT NOT NULL, url TEXT NOT NULL, UNIQUE(part_id,url));
         CREATE TABLE analogues(source_part_id TEXT NOT NULL, target_part_id TEXT NOT NULL, UNIQUE(source_part_id,target_part_id));
         CREATE TABLE compatibility(part_id TEXT NOT NULL, brand TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', years TEXT NOT NULL DEFAULT '', engine TEXT NOT NULL DEFAULT '', UNIQUE(part_id,brand,model,years,engine));
+        CREATE INDEX idx_specs_part ON specs(part_id);
+        CREATE INDEX idx_drawings_part ON drawings(part_id);
+        CREATE INDEX idx_analogues_source ON analogues(source_part_id);
+        CREATE INDEX idx_compatibility_part ON compatibility(part_id);
     """)
 
 
@@ -135,7 +158,11 @@ def load_articles(db, folder, suppliers_by_id, source_label, supplier_internal_i
     supplier_internal_ids = supplier_internal_ids or {}
     article_map = {}
     accepted = 0
+    processed = 0
+    started = time.monotonic()
     for row in read_tsv(path):
+        processed += 1
+        progress("articles {}".format(source_label), processed, started)
         if len(row) < 5:
             continue
         article_id, number, supplier_id, _generic_id, name = row[:5]
@@ -246,7 +273,11 @@ def load_specs(db, folder, article_to_part_id):
         return 0
     count = 0
     batch = []
+    processed = 0
+    started = time.monotonic()
     for row in read_tsv(path):
+        processed += 1
+        progress("article attributes", processed, started)
         if len(row) < 5:
             continue
         article_id = row[0].strip()
@@ -353,7 +384,11 @@ def load_drawings(db, folder, article_to_part_id, image_paths, article_supplier_
     article_supplier_ids = article_supplier_ids or {}
     count = missing_article = missing_image = 0
     batch = []
+    processed = 0
+    started = time.monotonic()
     for row in read_tsv(path):
+        processed += 1
+        progress("media information", processed, started)
         # Schema from source db.sql: article_id is column 0; PictureName is col 8.
         if len(row) < 9:
             continue
@@ -484,6 +519,7 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
             parts_by_supplier_sku.setdefault((supplier_internal_id, sku), []).append(part_id)
 
     total = imported = ambiguous = unsupported_types = engine_linkages = engine_vehicle_matches = 0
+    started = time.monotonic()
 
     def add_compatibility(part_id, vehicle, engine_name=""):
         nonlocal imported
@@ -501,6 +537,7 @@ def load_vehicle_compatibility(db, folder, supplier_internal_ids=None):
         if len(row) < 5:
             continue
         total += 1
+        progress("article linkages", total, started)
         item_type, item_id = row[0].strip(), row[1].strip()
         supplier_internal_id = row[3].strip()
         sku = clean_sku(row[4])
@@ -567,7 +604,11 @@ def load_crosses(db, folder, part_id_by_article):
         return 0
     target_by_supplier_number = {}
     ambiguous_targets = set()
+    article_rows = 0
+    started = time.monotonic()
     for article in read_tsv(articles_path):
+        article_rows += 1
+        progress("cross-list article index", article_rows, started)
         if len(article) < 3:
             continue
         article_id, number, supplier_id = article[0].strip(), article[1].strip(), article[2].strip()
@@ -583,10 +624,12 @@ def load_crosses(db, folder, part_id_by_article):
             target_by_supplier_number[key] = target_id
     total = imported = 0
     batch = []
+    started = time.monotonic()
     for row in read_tsv(path):
         if len(row) < 3:
             continue
         total += 1
+        progress("cross-list links", total, started)
         source_id, target_supplier, target_number = row[0].strip(), row[1].strip(), row[2].strip()
         source_part = part_id_by_article.get(source_id, "")
         target_part = target_by_supplier_number.get((target_supplier, clean_sku(target_number)), "")
@@ -681,6 +724,7 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
         prefixes = [r[0] for r in db.execute("SELECT DISTINCT substr(sku,1,2) FROM parts ORDER BY 1")]
         selected = None
     exported = 0
+    started = time.monotonic()
     for prefix in prefixes:
         destination = output_dir / (prefix + ".json")
         temporary = destination.with_suffix(".json.tmp")
@@ -689,6 +733,8 @@ def export_shards(db, output_dir, limit=None, prioritize_enriched=False):
         )
         shard = {}
         for part_id, sku, brand, name, manufacturer_id, internal_id, source_snapshot in rows:
+            if exported == 0 or (exported + 1) % 1000 == 0:
+                progress("JSON export", exported + 1, started, interval=1000)
             specs = {}
             for label, value, unit in db.execute("SELECT name,value,unit FROM specs WHERE part_id=? ORDER BY rowid", (part_id,)):
                 specs[label] = value + ((" " + unit) if unit and unit.lower() not in value.lower() else "")
@@ -793,37 +839,41 @@ def main():
                 if not text_dir.is_dir() or not graphics_dir.is_dir():
                     print("[ERROR] Expected raw_data/2Q2018 and raw_data/1Q2019.", file=sys.stderr)
                     return 2
-                suppliers = load_suppliers(text_dir, article_supplier_ids(text_dir))
-                supplier_internal_ids_2q = load_supplier_internal_ids(text_dir)
-                article_map_2q = load_articles(
+                suppliers = timed_stage("2Q2018 supplier mapping", load_suppliers, text_dir, article_supplier_ids(text_dir))
+                supplier_internal_ids_2q = timed_stage("2Q2018 supplier internal IDs", load_supplier_internal_ids, text_dir)
+                article_map_2q = timed_stage(
+                    "2Q2018 article import", load_articles,
                     db, text_dir, suppliers, "2Q2018", supplier_internal_ids_2q
                 )
-                load_specs(db, text_dir, article_map_2q)
-                load_vehicle_compatibility(db, text_dir, supplier_internal_ids_2q)
+                timed_stage("technical specifications", load_specs, db, text_dir, article_map_2q)
+                timed_stage("vehicle and engine compatibility", load_vehicle_compatibility, db, text_dir, supplier_internal_ids_2q)
 
                 # Media IDs belong to the 1Q2019 snapshot. Rebind them through
                 # stable supplier InternalID + normalized SKU, never by SKU alone.
-                supplier_internal_ids_1q = load_supplier_internal_ids(graphics_dir)
-                suppliers_1q = load_suppliers(graphics_dir, article_supplier_ids(graphics_dir))
-                article_map_1q = load_articles(
+                supplier_internal_ids_1q = timed_stage("1Q2019 supplier internal IDs", load_supplier_internal_ids, graphics_dir)
+                suppliers_1q = timed_stage("1Q2019 supplier mapping", load_suppliers, graphics_dir, article_supplier_ids(graphics_dir))
+                article_map_1q = timed_stage(
+                    "1Q2019 article import", load_articles,
                     db, graphics_dir, suppliers_1q, "1Q2019", supplier_internal_ids_1q
                 )
-                article_identity_1q = load_article_identity_index(
+                article_identity_1q = timed_stage(
+                    "1Q2019 media identity index", load_article_identity_index,
                     graphics_dir, supplier_internal_ids_1q
                 )
                 article_supplier_ids_1q = {
                     article_id: identity[2] for article_id, identity in article_identity_1q.items()
                 }
                 image_manifest = load_image_manifest(graphics_dir / "images_manifest.txt")
-                load_drawings(db, graphics_dir, article_map_1q, image_manifest,
-                              article_supplier_ids_1q)
-                load_crosses(db, text_dir, article_map_2q)
+                timed_stage("media and drawing links", load_drawings, db, graphics_dir, article_map_1q,
+                            image_manifest, article_supplier_ids_1q)
+                timed_stage("analogue cross references", load_crosses, db, text_dir, article_map_2q)
             count = db.execute("SELECT COUNT(*) FROM parts").fetchone()[0]
             if not count:
                 print("[ERROR] No articles imported. Inspect the downloaded TecDoc CSV layout.", file=sys.stderr)
                 return 1
             print("[INFO] Unique part records: {:,}".format(count))
-            exported, shard_count = export_shards(
+            exported, shard_count = timed_stage(
+                "JSON shard export", export_shards,
                 db, output_dir, args.limit, prioritize_enriched=args.prioritize_enriched
             )
             for table in ("specs", "analogues", "drawings", "compatibility"):
@@ -838,7 +888,7 @@ def main():
                    OR EXISTS (SELECT 1 FROM compatibility c WHERE c.part_id=p.part_id)
             """).fetchone()[0]
             print("[COVERAGE] parts with at least one linked detail record: {:,}".format(enriched))
-            print("[DONE] Exported {:,} records.".format(exported))
+            print("[DONE] Exported {:,} records across {:,} JSON shards.".format(exported, shard_count), flush=True)
             return 0
         finally:
             db.close()
