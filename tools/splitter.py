@@ -134,10 +134,6 @@ def create_db(db):
         CREATE TABLE drawings(part_id TEXT NOT NULL, url TEXT NOT NULL, UNIQUE(part_id,url));
         CREATE TABLE analogues(source_part_id TEXT NOT NULL, target_part_id TEXT NOT NULL, UNIQUE(source_part_id,target_part_id));
         CREATE TABLE compatibility(part_id TEXT NOT NULL, brand TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', years TEXT NOT NULL DEFAULT '', engine TEXT NOT NULL DEFAULT '', UNIQUE(part_id,brand,model,years,engine));
-        CREATE INDEX idx_specs_part ON specs(part_id);
-        CREATE INDEX idx_drawings_part ON drawings(part_id);
-        CREATE INDEX idx_analogues_source ON analogues(source_part_id);
-        CREATE INDEX idx_compatibility_part ON compatibility(part_id);
     """)
 
 
