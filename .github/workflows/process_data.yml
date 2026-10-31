@@ -186,7 +186,7 @@ jobs:
 
           total = 0
           counts = {"with_specs": 0, "with_analogues": 0, "with_drawings": 0, "with_compatibility": 0}
-          required = {"part_id", "manufacturer_id", "internal_id", "sku", "brand", "name", "specs", "technical_drawings", "analogues", "compatibility"}
+          required = {"part_id", "source_snapshot", "manufacturer_id", "internal_id", "sku", "brand", "name", "specs", "technical_drawings", "analogues", "compatibility"}
           for path in files:
               data = json.loads(path.read_text(encoding="utf-8"))
               if not isinstance(data, dict) or not data:
@@ -203,7 +203,7 @@ jobs:
                           raise SystemExit("Record is stored in the wrong SKU shard: " + str(path) + ": " + key)
                       if not record.get("manufacturer_id") or not record.get("internal_id"):
                           raise SystemExit("Composite manufacturer/internal/article identity is incomplete: " + key)
-                      expected_part_id = "2Q2018:" + record["manufacturer_id"] + ":" + record["internal_id"] + ":" + key
+                      expected_part_id = record["source_snapshot"] + ":" + record["manufacturer_id"] + ":" + record["internal_id"] + ":" + key
                       if record["part_id"] != expected_part_id:
                           raise SystemExit("Composite part_id does not match its fields: " + key)
                       if record["specs"]:
