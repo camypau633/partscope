@@ -24,22 +24,14 @@ while True:
         _csv_limit //= 10
 WORK.mkdir(exist_ok=True)
 TABLES = [
-    "articles.csv",
-    "article_attributes",
-    "article_informations",
-    "article_mediainformation",
-    "article_oe_numbers",
-    "article_ea_numbers",
-    "article_cross_list",
-    "articles_linkages",
-    "article_new_numbers",
-    "article_replace_numbers",
-    "article_utility_numbers",
-    "article_parts_list",
-    "article_parts_list_parents",
-    "article_accessory_lists",
+    "articles.csv", "article_attributes", "article_informations",
+    "article_mediainformation", "article_oe_numbers", "article_ea_numbers",
+    "article_cross_list", "articles_linkages", "article_new_numbers",
+    "article_replace_numbers", "article_utility_numbers", "article_parts_list",
+    "article_parts_list_parents", "article_accessory_lists",
     "article_accessory_list_parents",
 ]
+
 
 def request(url):
     headers = {"User-Agent": "PartScope-TecDoc-2018-Integrity-Audit"}
@@ -48,14 +40,21 @@ def request(url):
         headers["Authorization"] = "Bearer " + token
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=180)
 
+
 def download(path, dest):
-    url = RAW.format(REPO, path)
-    with request(url) as response, dest.open("wb") as out:
+    with request(RAW.format(REPO, path)) as response, dest.open("wb") as out:
         while True:
             block = response.read(1024 * 1024)
             if not block:
                 break
             out.write(block)
+
+
+def part_sort_key(path):
+    # Unsplit CSV files sort first; numbered chunks sort numerically.
+    match = re.search(r"\.(\d{3})$", path)
+    return (1, int(match.group(1))) if match else (0, 0)
+
 
 def main():
     with request(API.format(REPO)) as response:
@@ -68,7 +67,6 @@ def main():
     db.execute("DELETE FROM ids")
     report = {"repository": REPO, "tables": {}, "supplier_metadata": {}}
 
-    # Supplier NbrOfArticles is metadata, not a substitute for counting article rows.
     supplier_path = next(x["path"] for x in files if x["path"] == "suppliers.csv")
     supplier_file = WORK / "suppliers.csv"
     download(supplier_path, supplier_file)
@@ -93,8 +91,8 @@ def main():
     for table in TABLES:
         pattern = (re.compile(r"^articles\.csv$") if table == "articles.csv" else
                    re.compile(r"^" + re.escape(table) + r"\.csv(?:\.\d{3})?$"))
-        parts = sorted([x["path"] for x in files if pattern.fullmatch(x["path"])],
-                       key=lambda p: -1 if p == table else int(p.rsplit(".", 1)[1]))
+        parts = sorted((x["path"] for x in files if pattern.fullmatch(x["path"])),
+                       key=part_sort_key)
         if not parts:
             report["tables"][table] = {"missing": True}
             continue
@@ -129,7 +127,7 @@ def main():
                     max_id = number if max_id is None else max(max_id, number)
                 except ValueError:
                     pass
-                if table == "articles.csv":
+                if unique_ids is not None:
                     unique_ids.add(article_id)
                 else:
                     batch.append((table, article_id))
@@ -149,16 +147,17 @@ def main():
         report["tables"][table] = result
         print(table, json.dumps(result), flush=True)
 
-    # Unique article IDs referenced by each relation table, and whether IDs exist in articles.csv.
     for table in TABLES:
         if table == "articles.csv" or table not in report["tables"] or report["tables"][table].get("missing"):
             continue
-        counts = db.execute("SELECT COUNT(DISTINCT article_id), MIN(CAST(article_id AS INTEGER)), MAX(CAST(article_id AS INTEGER)) FROM ids WHERE table_name=?", (table,)).fetchone()
+        counts = db.execute(
+            "SELECT COUNT(DISTINCT article_id), MIN(CAST(article_id AS INTEGER)), "
+            "MAX(CAST(article_id AS INTEGER)) FROM ids WHERE table_name=?", (table,)
+        ).fetchone()
         report["tables"][table]["unique_article_ids_referenced"] = counts[0]
         report["tables"][table]["min_article_id"] = counts[1]
         report["tables"][table]["max_article_id"] = counts[2]
 
-    # IDs outside the article master CSV indicate orphaned references or an incomplete master table.
     article_file = WORK / "articles-merged.tsv"
     article_ids = set()
     with article_file.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -182,7 +181,8 @@ def main():
             "ids_not_found_in_articles_csv": missing
         }
 
-    Path("tecdoc-2018-integrity.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    Path("tecdoc-2018-integrity.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     lines = ["# TecDoc 2Q2018 article-table integrity audit", "",
              "This audit counts the article master table and article-related tables separately.", ""]
     for name, values in report["tables"].items():
@@ -190,7 +190,8 @@ def main():
             lines.append("- **{}**: missing".format(name))
         else:
             lines.append("- **{}**: {:,} rows; {:,} unique article IDs referenced; ID range {}–{}".format(
-                name, values["rows"], values.get("unique_article_ids", values.get("unique_article_ids_referenced", 0)),
+                name, values["rows"],
+                values.get("unique_article_ids", values.get("unique_article_ids_referenced", 0)),
                 values.get("min_article_id"), values.get("max_article_id")))
     lines += ["", "## Master-table reference checks", "",
               "- Article IDs in articles.csv: **{:,}**".format(report["master_article_ids"])]
@@ -200,6 +201,7 @@ def main():
     Path("tecdoc-2018-integrity.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines), flush=True)
     db.close()
+
 
 if __name__ == "__main__":
     main()
