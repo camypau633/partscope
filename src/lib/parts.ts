@@ -1,7 +1,7 @@
 import { get, set } from "idb-keyval";
 
 export type Analogue = { partId?: string; brand: string; sku: string; name: string };
-export type Vehicle = { id: string; make: string; model: string; years: string; engine: string };
+export type Vehicle = { id: string; make: string; model: string; years: string; engine: string; catcarUrl?: string };
 export type Spec = { key: string; label: string; value: string | number; unit?: string };
 export type Hotspot = {
   id: string;
@@ -136,7 +136,7 @@ export function normalizeRemote(
       const model = str(item["model"]);
       const engine = str(item["engine"]);
       const years = str(item["years"] ?? item["year"] ?? [item["yearFrom"], item["yearTo"]].filter(Boolean).join("–"));
-      return { id: str(item["id"]) || slug(`${make}-${model}-${engine}-${years}`), make, model, years, engine };
+      const catcarUrl = str(item["catcar_url"] ?? item["catcarUrl"] ?? item["epc_url"] ?? item["epcUrl"]);\n      return { id: str(item["id"]) || slug(`${make}-${model}-${engine}-${years}`), make, model, years, engine, ...(catcarUrl ? { catcarUrl } : {}) };
     })
     .filter((item) => item.make || item.model);
 
