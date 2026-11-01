@@ -4,10 +4,11 @@ import { useState } from "react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { ArrowLeft, Loader2, Share2, ZoomIn, ZoomOut, Maximize, X } from "lucide-react";
 import { getPart, sanitizeSku, type Hotspot, type PartData } from "@/lib/parts";
+import { fetchCatCarPage } from "@/lib/catcar";
 import { TechnicalDrawings } from "@/components/TechnicalDrawings";
 
 export const Route = createFileRoute("/diagram")({
-  validateSearch: (s: Record<string, unknown>) => ({ part: sanitizeSku(String(s["part"] ?? "")), partId: String(s["partId"] ?? ""), car: String(s["car"] ?? "") }),
+  validateSearch: (s: Record<string, unknown>) => ({ part: sanitizeSku(String(s["part"] ?? "")), partId: String(s["partId"] ?? ""), car: String(s["car"] ?? ""), catcarUrl: String(s["catcarUrl"] ?? "") }),
   head: () => ({
     meta: [
       { title: "Схема узла — PartScope" },
@@ -21,8 +22,9 @@ export const Route = createFileRoute("/diagram")({
 });
 
 function Diagram() {
-  const { part, partId, car } = Route.useSearch();
+  const { part, partId, car, catcarUrl } = Route.useSearch();
   const { data, isLoading, isError, error } = useQuery({ queryKey: ["part", part, partId], queryFn: () => getPart(part, partId), enabled: !!part, staleTime: Infinity });
+  const catcarQuery = useQuery({ queryKey: ["catcar-page", catcarUrl], queryFn: () => fetchCatCarPage(catcarUrl), enabled: !!catcarUrl, staleTime: 5 * 60 * 1000 });
   const [active, setActive] = useState<Hotspot | null>(null);
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<"diagram" | "specs" | "drawings">("diagram");
@@ -72,7 +74,63 @@ function Diagram() {
         ))}
       </div>
 
-      {tab === "specs" ? <SpecsTable data={data} /> : tab === "drawings" ? <TechnicalDrawings data={data} /> : !imageUrl ? (
+      {tab === "specs" ? <SpecsTable data={data} /> : tab === "drawings" ? <TechnicalDrawings data={data} /> : catcarUrl ? (
+        <section className="flex-1 space-y-4 overflow-y-auto p-4" aria-label="Заводская схема CatCar">
+          {catcarQuery.isLoading && (
+            <div className="space-y-3" role="status" aria-label="Загрузка заводской схемы">
+              <div className="h-72 animate-pulse rounded-xl bg-muted" />
+              {[0, 1, 2].map((item) => <div key={item} className="h-12 animate-pulse rounded-xl bg-muted" />)}
+              <p className="text-center text-sm text-muted-foreground">Загрузка схемы и списка деталей CatCar…</p>
+            </div>
+          )}
+          {catcarQuery.isError && (
+            <div className="rounded-xl border border-destructive/30 p-4 text-sm" role="alert">
+              <p className="font-semibold">Не удалось загрузить схему CatCar</p>
+              <p className="mt-1 text-muted-foreground">{catcarQuery.error instanceof Error ? catcarQuery.error.message : "Прокси не вернул данные."}</p>
+              <button type="button" onClick={() => catcarQuery.refetch()} className="mt-3 rounded-lg border px-3 py-2 font-medium">Повторить</button>
+            </div>
+          )}
+          {catcarQuery.data && (
+            <>
+              {catcarQuery.data.scheme_image ? (
+                <div className="flex min-h-56 items-center justify-center overflow-auto rounded-xl border bg-white p-2">
+                  <img src={catcarQuery.data.scheme_image} alt="Заводская взрыв-схема CatCar" className="max-h-[65vh] max-w-full object-contain" />
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">Изображение схемы отсутствует в ответе каталога.</div>
+              )}
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-semibold">Детали на схеме</h2>
+                <span className="text-xs text-muted-foreground">{catcarQuery.data.parts.length} позиций</span>
+              </div>
+              {catcarQuery.data.parts.length ? (
+                <div className="overflow-hidden rounded-xl border">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-muted/60 text-xs text-muted-foreground">
+                      <tr><th className="px-3 py-3">Поз.</th><th className="px-3 py-3">OEM</th><th className="px-3 py-3">Наименование</th></tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {catcarQuery.data.parts.map((item, index) => (
+                        <tr key={`${item.cleaned_oem}:${item.pos}:${index}`} className="odd:bg-card">
+                          <td className="whitespace-nowrap px-3 py-3 font-mono">{item.pos}</td>
+                          <td className="whitespace-nowrap px-3 py-3">
+                            <Link to="/search" search={{ part: item.cleaned_oem, partId: "" }} className="font-mono font-semibold text-primary hover:underline">{item.cleaned_oem}</Link>
+                            {item.raw_oem !== item.cleaned_oem && <div className="text-[11px] text-muted-foreground">{item.raw_oem}</div>}
+                          </td>
+                          <td className="px-3 py-3">{item.name}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="rounded-xl border border-dashed p-5 text-center text-sm text-muted-foreground">В ответе CatCar нет распознанных OEM-позиций.</p>
+              )}
+              <p className="text-xs text-muted-foreground">Нажатие на очищенный OEM открывает поиск детали и доступные перекрёстные ссылки PartScope.</p>
+            </>
+          )}
+        </section>
+      ) : !imageUrl ? (
         <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-muted-foreground">Каталог не вернул схему для этой детали</div>
       ) : (
         <div className="relative flex-1 overflow-hidden bg-blueprint-paper" style={{ touchAction: "none" }}>
