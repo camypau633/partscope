@@ -65,7 +65,7 @@ async function requestCatalog(params: URLSearchParams): Promise<CatCarBrowsePayl
         `Адрес прокси: ${PROXY_BASE_URL}`,
         `Причина: ${reason}`,
         "Проверь доступность функции и CORS.",
-      ].join("\\n"),
+      ].join("\n"),
     );
   }
 
@@ -99,7 +99,7 @@ async function requestCatalog(params: URLSearchParams): Promise<CatCarBrowsePayl
       !responseText ? "Тело ответа пустое." : "",
     ].filter(Boolean);
 
-    throw new Error(details.join("\\n"));
+    throw new Error(details.join("\n"));
   }
 
   if (!payload || typeof payload !== "object") {
@@ -108,7 +108,7 @@ async function requestCatalog(params: URLSearchParams): Promise<CatCarBrowsePayl
         "Прокси вернул некорректный ответ.",
         `HTTP: ${response.status}`,
         responseText ? `Ответ: ${responseText.slice(0, 1200)}` : "Тело ответа пустое.",
-      ].join("\\n"),
+      ].join("\n"),
     );
   }
 
