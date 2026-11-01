@@ -151,6 +151,10 @@ def main():
             (snapshot,)
         ).fetchone()[0]
 
+        supplier_ids = db.execute(
+            "SELECT COUNT(DISTINCT supplier_id) FROM articles WHERE snapshot=? AND supplier_id<>''",
+            (snapshot,)
+        ).fetchone()[0]
         duplicate_ids = db.execute(\n            \"SELECT COUNT(*) - COUNT(DISTINCT article_id) FROM articles WHERE snapshot=?\",\n            (snapshot,)\n        ).fetchone()[0]\n\n        supplier_ids = db.execute(\n            "SELECT COUNT(DISTINCT supplier_id) FROM articles WHERE snapshot=? AND supplier_id<>''",
             (snapshot,)
         ).fetchone()[0]
