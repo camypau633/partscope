@@ -146,6 +146,11 @@ def main():
             FROM articles WHERE snapshot=?
         """, (snapshot,)).fetchone()
 
+        duplicate_ids = db.execute(
+            "SELECT COUNT(*) - COUNT(DISTINCT article_id) FROM articles WHERE snapshot=?",
+            (snapshot,)
+        ).fetchone()[0]
+
         duplicate_ids = db.execute(\n            \"SELECT COUNT(*) - COUNT(DISTINCT article_id) FROM articles WHERE snapshot=?\",\n            (snapshot,)\n        ).fetchone()[0]\n\n        supplier_ids = db.execute(\n            "SELECT COUNT(DISTINCT supplier_id) FROM articles WHERE snapshot=? AND supplier_id<>''",
             (snapshot,)
         ).fetchone()[0]
@@ -170,7 +175,19 @@ def main():
         }
         print(json.dumps(summary["sources"][snapshot], ensure_ascii=False, indent=2), flush=True)
 
-    db.execute(\"CREATE INDEX idx_article_identity ON articles(snapshot, supplier_id, normalized_sku)\")\n    db.commit()\n    overlap = db.execute(\"\"\"\n        SELECT COUNT(*) FROM (\n            SELECT supplier_id, normalized_sku FROM articles\n            WHERE snapshot='2Q2018' AND supplier_id<>'' AND normalized_sku<>''\n            GROUP BY supplier_id, normalized_sku\n            INTERSECT\n            SELECT supplier_id, normalized_sku FROM articles\n            WHERE snapshot='1Q2019' AND supplier_id<>'' AND normalized_sku<>''\n            GROUP BY supplier_id, normalized_sku\n        )\n    \"\"\").fetchone()[0]
+    db.execute("CREATE INDEX idx_article_identity ON articles(snapshot, supplier_id, normalized_sku)")
+    db.commit()
+    overlap = db.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT supplier_id, normalized_sku FROM articles
+            WHERE snapshot='2Q2018' AND supplier_id<>'' AND normalized_sku<>''
+            GROUP BY supplier_id, normalized_sku
+            INTERSECT
+            SELECT supplier_id, normalized_sku FROM articles
+            WHERE snapshot='1Q2019' AND supplier_id<>'' AND normalized_sku<>''
+            GROUP BY supplier_id, normalized_sku
+        )
+    """).fetchone()[0]
     union_count = db.execute("""
         SELECT COUNT(*) FROM (
             SELECT supplier_id, normalized_sku
