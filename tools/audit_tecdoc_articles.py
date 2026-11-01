@@ -94,42 +94,49 @@ def main():
         missing_supplier = 0
         duplicate_ids = 0
         batch = []
+        merged = local / "articles-merged.tsv"
+        with merged.open("wb") as output:
+            for index, path in enumerate(article_paths, 1):
+                target = local / Path(path).name
+                if not target.exists() or target.stat().st_size == 0:
+                    print("Downloading", snapshot, path, flush=True)
+                    download(repo, path, target)
+                with target.open("rb") as source:
+                    while True:
+                        block = source.read(1024 * 1024)
+                        if not block:
+                            break
+                        output.write(block)
+                print("Downloaded", snapshot, index, "/", len(article_paths), path, flush=True)
 
-        for index, path in enumerate(article_paths, 1):
-            target = local / Path(path).name
-            if not target.exists() or target.stat().st_size == 0:
-                print("Downloading", snapshot, path, flush=True)
-                download(repo, path, target)
-            with target.open("r", encoding="utf-8-sig", newline="") as handle:
-                reader = csv.reader(handle, delimiter="\t")
-                for row in reader:
-                    if not row or all(not cell.strip() for cell in row):
-                        continue
-                    raw_rows += 1
-                    if len(row) < 20:
-                        raise RuntimeError(
-                            "Unexpected articles.csv row width in {}: {} columns at row {}".format(
-                                snapshot, len(row), raw_rows
-                            )
+        with merged.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.reader(handle, delimiter="\\t")
+            for row in reader:
+                if not row or all(not cell.strip() for cell in row):
+                    continue
+                raw_rows += 1
+                if len(row) < 20:
+                    raise RuntimeError(
+                        "Unexpected articles.csv row width after merging {}: {} columns at row {}".format(
+                            snapshot, len(row), raw_rows
                         )
-                    article_id = row[0].strip()
-                    sku = row[1].strip()
-                    supplier_id = row[2].strip()
-                    if not sku:
-                        empty_sku += 1
-                    if not supplier_id:
-                        missing_supplier += 1
-                    batch.append((
-                        snapshot, article_id, supplier_id, sku, normalize(sku),
-                        row[19].strip(), row[18].strip()
-                    ))
-                    if len(batch) >= 25000:
-                        db.executemany("INSERT INTO articles VALUES (?,?,?,?,?,?,?)", batch)
-                        db.commit()
-                        inserted += len(batch)
-                        batch = []
-            print("Processed", snapshot, index, "/", len(article_paths), path, flush=True)
-
+                    )
+                article_id = row[0].strip()
+                sku = row[1].strip()
+                supplier_id = row[2].strip()
+                if not sku:
+                    empty_sku += 1
+                if not supplier_id:
+                    missing_supplier += 1
+                batch.append((
+                    snapshot, article_id, supplier_id, sku, normalize(sku),
+                    row[19].strip(), row[18].strip()
+                ))
+                if len(batch) >= 25000:
+                    db.executemany("INSERT INTO articles VALUES (?,?,?,?,?,?,?)", batch)
+                    db.commit()
+                    inserted += len(batch)
+                    batch = []
         if batch:
             db.executemany("INSERT INTO articles VALUES (?,?,?,?,?,?,?)", batch)
             db.commit()
