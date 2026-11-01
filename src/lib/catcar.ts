@@ -48,32 +48,74 @@ function validateCatCarUrl(value: string): string {
 }
 
 async function requestCatalog(params: URLSearchParams): Promise<CatCarBrowsePayload> {
-  const response = await fetch(`${PROXY_BASE_URL}?${params.toString()}`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-  });
+  const requestUrl = `${PROXY_BASE_URL}?${params.toString()}`;
+  let response: Response;
 
-  if (!response.ok) {
-    let detail = "";
-    try {
-      const errorBody = (await response.json()) as { error?: string };
-      detail = errorBody.error ? `: ${errorBody.error}` : "";
-    } catch {
-      // Ignore non-JSON gateway responses.
-    }
-    throw new Error(`CatCar proxy вернул HTTP ${response.status}${detail}`);
+  try {
+    response = await fetch(requestUrl, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      [
+        "Не удалось связаться с Yandex Cloud Function.",
+        "Этап: отправка запроса из браузера.",
+        `Адрес прокси: ${PROXY_BASE_URL}`,
+        `Причина: ${reason}`,
+        "Проверь доступность функции и CORS.",
+      ].join("\\n"),
+    );
   }
 
-  const payload: unknown = await response.json();
+  const responseText = await response.text();
+  let payload: unknown = null;
+  try {
+    payload = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const raw = payload && typeof payload === "object"
+      ? payload as Record<string, unknown>
+      : {};
+    const diagnostic = raw["diagnostic"] && typeof raw["diagnostic"] === "object"
+      ? raw["diagnostic"] as Record<string, unknown>
+      : {};
+    const details = [
+      `HTTP прокси: ${response.status} ${response.statusText}`,
+      typeof raw["error"] === "string" ? `Ошибка: ${raw["error"]}` : "",
+      diagnostic["stage"] ? `Этап: ${String(diagnostic["stage"])}` : "",
+      diagnostic["action"] ? `Действие: ${String(diagnostic["action"])}` : "",
+      diagnostic["target"] ? `Сервер CatCar: ${String(diagnostic["target"])}` : "",
+      diagnostic["error_code"] ? `Код ошибки: ${String(diagnostic["error_code"])}` : "",
+      diagnostic["error_message"] ? `Подробности: ${String(diagnostic["error_message"])}` : "",
+      diagnostic["upstream_status"] ? `HTTP CatCar: ${String(diagnostic["upstream_status"])} ${String(diagnostic["upstream_status_text"] ?? "")}` : "",
+      diagnostic["redirect_location"] ? `Адрес перенаправления: ${String(diagnostic["redirect_location"])}` : "",
+      diagnostic["elapsed_ms"] !== undefined ? `Время запроса: ${String(diagnostic["elapsed_ms"])} мс` : "",
+      !payload && responseText ? `Ответ шлюза: ${responseText.slice(0, 1200)}` : "",
+      !responseText ? "Тело ответа пустое." : "",
+    ].filter(Boolean);
+
+    throw new Error(details.join("\\n"));
+  }
+
   if (!payload || typeof payload !== "object") {
-    throw new Error("Прокси вернул некорректный ответ.");
+    throw new Error(
+      [
+        "Прокси вернул некорректный ответ.",
+        `HTTP: ${response.status}`,
+        responseText ? `Ответ: ${responseText.slice(0, 1200)}` : "Тело ответа пустое.",
+      ].join("\\n"),
+    );
   }
 
   const raw = payload as Record<string, unknown>;
   if (raw["success"] !== true) {
-    throw new Error(
-      typeof raw["error"] === "string" ? raw["error"] : "CatCar не подтвердил запрос.",
-    );
+    const errorText = typeof raw["error"] === "string" ? raw["error"] : "CatCar не подтвердил запрос.";
+    throw new Error(errorText);
   }
 
   const items = Array.isArray(raw["items"])
