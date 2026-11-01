@@ -81,8 +81,8 @@ def main():
     }
 
     for table in TABLES:
-        pattern = (re.compile(r"^articles\\.csv$") if table == "articles.csv" else
-                   re.compile(r"^" + re.escape(table) + r"\\.csv(?:\\.\\d{3})?$"))
+        pattern = (re.compile(r"^articles\.csv$") if table == "articles.csv" else
+                   re.compile(r"^" + re.escape(table) + r"\.csv(?:\.\d{3})?$"))
         parts = sorted([x["path"] for x in files if pattern.fullmatch(x["path"])],
                        key=lambda p: -1 if p == table else int(p.rsplit(".", 1)[1]))
         if not parts:
