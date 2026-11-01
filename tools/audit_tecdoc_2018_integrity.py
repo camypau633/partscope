@@ -129,7 +129,8 @@ def main():
                     pass
                 if unique_ids is not None:
                     unique_ids.add(article_id)
-                else:
+                elif table != "articles_linkages":
+                    # articles_linkages starts with item_type, not article_id.
                     batch.append((table, article_id))
                     if len(batch) >= 50000:
                         db.executemany("INSERT INTO ids VALUES (?,?)", batch)
@@ -142,13 +143,17 @@ def main():
                   "max_article_id": max_id}
         if unique_ids is not None:
             result["unique_article_ids"] = len(unique_ids)
+        elif table == "articles_linkages":
+            result["article_id_reference_check"] = "not_applicable: first column is item_type"
+            result["unique_article_ids_referenced"] = None
         else:
             result["unique_article_ids_referenced"] = None
         report["tables"][table] = result
         print(table, json.dumps(result), flush=True)
 
     for table in TABLES:
-        if table == "articles.csv" or table not in report["tables"] or report["tables"][table].get("missing"):
+        if (table in ("articles.csv", "articles_linkages") or table not in report["tables"]
+                or report["tables"][table].get("missing")):
             continue
         counts = db.execute(
             "SELECT COUNT(DISTINCT article_id), MIN(CAST(article_id AS INTEGER)), "
@@ -167,7 +172,8 @@ def main():
     report["master_article_ids"] = len(article_ids)
     report["reference_checks"] = {}
     for table in TABLES:
-        if table == "articles.csv" or table not in report["tables"] or report["tables"][table].get("missing"):
+        if (table in ("articles.csv", "articles_linkages") or table not in report["tables"]
+                or report["tables"][table].get("missing")):
             continue
         cursor = db.execute("SELECT DISTINCT article_id FROM ids WHERE table_name=?", (table,))
         missing = 0
@@ -195,6 +201,8 @@ def main():
                 values.get("min_article_id"), values.get("max_article_id")))
     lines += ["", "## Master-table reference checks", "",
               "- Article IDs in articles.csv: **{:,}**".format(report["master_article_ids"])]
+    if "articles_linkages" in report["tables"] and not report["tables"]["articles_linkages"].get("missing"):
+        lines.append("- **articles_linkages**: reference check skipped; first column is item_type, not article_id")
     for name, values in report["reference_checks"].items():
         lines.append("- **{}**: {:,} unique IDs checked; {:,} not found in articles.csv".format(
             name, values["unique_ids_checked"], values["ids_not_found_in_articles_csv"]))
