@@ -132,8 +132,9 @@ class Progress:
             "completed_subgroups": [],
             "visited_pages": [],
             "failed_urls": [],
+            "pending_urls": [],
         })
-        for key in ("completed_subgroups", "visited_pages", "failed_urls"):
+        for key in ("completed_subgroups", "visited_pages", "failed_urls", "pending_urls"):
             self.data.setdefault(key, [])
 
     def save(self):
@@ -148,6 +149,19 @@ class Progress:
     def add(self, key, url):
         if url not in self.data[key]:
             self.data[key].append(url)
+            self.save()
+
+    def add_pending(self, url, label):
+        if not any(item.get("url") == url for item in self.data["pending_urls"]):
+            self.data["pending_urls"].append({"url": url, "label": label})
+            self.save()
+
+    def remove_pending(self, url):
+        before = len(self.data["pending_urls"])
+        self.data["pending_urls"] = [
+            item for item in self.data["pending_urls"] if item.get("url") != url
+        ]
+        if len(self.data["pending_urls"]) != before:
             self.save()
 
 
@@ -354,14 +368,20 @@ class CatcarCrawler:
         return links
 
     def crawl(self):
-        queue = deque([(self.start_url, "Japan")])
-        queued = {self.start_url}
+        if not self.progress.data["pending_urls"]:
+            self.progress.add_pending(self.start_url, "Japan")
+        queue = deque(
+            (item["url"], item.get("label", "catalog"))
+            for item in self.progress.data["pending_urls"]
+        )
+        queued = {url for url, _label in queue}
         visited = set(self.progress.data["visited_pages"])
         completed = set(self.progress.data["completed_subgroups"])
 
         while queue:
             url, label = queue.popleft()
             if url in visited:
+                self.progress.remove_pending(url)
                 continue
             if self.max_pages and self.pages_this_run >= self.max_pages:
                 logging.info("Reached --max-pages=%s; stopping cleanly.", self.max_pages)
@@ -380,8 +400,6 @@ class CatcarCrawler:
             title = self.page_title(soup)
             car_context = self.page_car_context(soup, url)
             self.pages_this_run += 1
-            visited.add(url)
-            self.progress.add("visited_pages", url)
 
             logging.info("PAGE %s | %s | %s | compiled OEMs: %s",
                          self.pages_this_run, label or title or "catalog",
@@ -396,6 +414,9 @@ class CatcarCrawler:
                         "SUBGROUP DONE | %s | new part rows: %s | scheme: %s | total OEMs: %s",
                         title or label, count, image_url or "not found", self.writer.oem_count
                     )
+                visited.add(url)
+                self.progress.add("visited_pages", url)
+                self.progress.remove_pending(url)
                 continue
 
             children = self.child_links(soup, url)
@@ -404,7 +425,13 @@ class CatcarCrawler:
             for child_url, child_label in children:
                 if child_url not in queued and child_url not in visited:
                     queued.add(child_url)
-                    queue.append((child_url, child_label or label))
+                    child_label = child_label or label
+                    self.progress.add_pending(child_url, child_label)
+                    queue.append((child_url, child_label))
+
+            visited.add(url)
+            self.progress.add("visited_pages", url)
+            self.progress.remove_pending(url)
 
         self.writer.flush()
         self.progress.save()
