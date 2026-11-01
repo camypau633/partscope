@@ -2,6 +2,11 @@ name: Audit TecDoc article counts
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/audit_tecdoc_articles.py'
+      - '.github/workflows/audit_tecdoc_articles.yml'
 
 permissions:
   contents: read
