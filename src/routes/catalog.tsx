@@ -109,7 +109,7 @@ function CatCarCatalog() {
         {query.isError && (
           <div className="rounded-xl border border-destructive/30 p-4 text-sm" role="alert">
             <p className="font-semibold">Не удалось загрузить каталог</p>
-            <p className="mt-1 text-muted-foreground">{query.error instanceof Error ? query.error.message : "Прокси не вернул ответ."}</p>
+            <pre className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-muted/60 p-3 font-mono text-xs leading-relaxed text-muted-foreground">{query.error instanceof Error ? query.error.message : "Прокси не вернул ответ."}</pre>
             <button type="button" onClick={() => query.refetch()} className="mt-3 rounded-lg border px-3 py-2 font-medium">Повторить</button>
           </div>
         )}
