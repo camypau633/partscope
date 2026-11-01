@@ -116,7 +116,7 @@ def main():
                 print("Downloaded", snapshot, index, "/", len(article_paths), path, flush=True)
 
         with merged.open("r", encoding="utf-8-sig", newline="") as handle:
-            reader = csv.reader(handle, delimiter="\\t")
+            reader = csv.reader(handle, delimiter="\t")
             for row in reader:
                 if not row or all(not cell.strip() for cell in row):
                     continue
