@@ -5,8 +5,16 @@ export type CatCarPart = {
   name: string;
 };
 
-export type CatCarPayload = {
+export type CatCarNavigationItem = {
+  label: string;
+  url: string;
+};
+
+export type CatCarBrowsePayload = {
   success: true;
+  page_url: string;
+  title: string;
+  items: CatCarNavigationItem[];
   scheme_image: string;
   parts: CatCarPart[];
 };
@@ -20,7 +28,6 @@ function cleanOem(value: unknown): string {
 
 function validateCatCarUrl(value: string): string {
   let parsed: URL;
-
   try {
     parsed = new URL(value);
   } catch {
@@ -32,25 +39,18 @@ function validateCatCarUrl(value: string): string {
     parsed.protocol !== "https:" ||
     (host !== "catcar.info" && host !== "www.catcar.info") ||
     parsed.username ||
-    parsed.password
+    parsed.password ||
+    parsed.port
   ) {
     throw new Error("Поддерживаются только HTTPS-ссылки catcar.info.");
   }
-
   return parsed.toString();
 }
 
-export async function fetchCatCarPage(
-  targetUrl: string,
-  signal?: AbortSignal,
-): Promise<CatCarPayload> {
-  const safeTargetUrl = validateCatCarUrl(targetUrl);
-  const endpoint = `${PROXY_BASE_URL}?url=${encodeURIComponent(safeTargetUrl)}`;
-
-  const response = await fetch(endpoint, {
+async function requestCatalog(params: URLSearchParams): Promise<CatCarBrowsePayload> {
+  const response = await fetch(`${PROXY_BASE_URL}?${params.toString()}`, {
     method: "GET",
     headers: { Accept: "application/json" },
-    signal,
   });
 
   if (!response.ok) {
@@ -59,7 +59,7 @@ export async function fetchCatCarPage(
       const errorBody = (await response.json()) as { error?: string };
       detail = errorBody.error ? `: ${errorBody.error}` : "";
     } catch {
-      // The function may return a non-JSON gateway error.
+      // Ignore non-JSON gateway responses.
     }
     throw new Error(`CatCar proxy вернул HTTP ${response.status}${detail}`);
   }
@@ -70,23 +70,39 @@ export async function fetchCatCarPage(
   }
 
   const raw = payload as Record<string, unknown>;
-  if (raw["success"] !== true || !Array.isArray(raw["parts"])) {
+  if (raw["success"] !== true) {
     throw new Error(
-      typeof raw["error"] === "string"
-        ? raw["error"]
-        : "CatCar не вернул подтверждённые данные схемы.",
+      typeof raw["error"] === "string" ? raw["error"] : "CatCar не подтвердил запрос.",
     );
   }
 
-  const rawImage = typeof raw["scheme_image"] === "string"
-    ? raw["scheme_image"].trim()
-    : "";
-  let schemeImage = "";
+  const items = Array.isArray(raw["items"])
+    ? raw["items"]
+        .map((value): CatCarNavigationItem | null => {
+          if (!value || typeof value !== "object") return null;
+          const item = value as Record<string, unknown>;
+          const label = String(item["label"] ?? "").trim();
+          const rawUrl = String(item["url"] ?? "").trim();
+          if (!label || !rawUrl) return null;
+          try {
+            return { label, url: validateCatCarUrl(rawUrl) };
+          } catch {
+            return null;
+          }
+        })
+        .filter((item): item is CatCarNavigationItem => item !== null)
+    : [];
 
+  const pageUrl = typeof raw["page_url"] === "string" ? raw["page_url"] : "";
+  const rawImage = typeof raw["scheme_image"] === "string" ? raw["scheme_image"].trim() : "";
+  let schemeImage = "";
   if (rawImage) {
     try {
-      const imageUrl = new URL(rawImage, safeTargetUrl);
-      if (imageUrl.protocol === "https:" || imageUrl.protocol === "http:") {
+      const imageUrl = new URL(rawImage, pageUrl || "https://www.catcar.info/");
+      if (
+        (imageUrl.protocol === "https:" || imageUrl.protocol === "http:") &&
+        (imageUrl.hostname === "ci.catcar.info" || imageUrl.hostname.endsWith(".catcar.info"))
+      ) {
         schemeImage = imageUrl.toString();
       }
     } catch {
@@ -94,27 +110,41 @@ export async function fetchCatCarPage(
     }
   }
 
-  const parts = raw["parts"]
-    .map((value): CatCarPart | null => {
-      if (!value || typeof value !== "object") return null;
-      const item = value as Record<string, unknown>;
-      const rawOem = String(item["raw_oem"] ?? "").trim();
-      const cleanedOem = cleanOem(item["cleaned_oem"]) || cleanOem(rawOem);
-
-      if (!cleanedOem) return null;
-
-      return {
-        cleaned_oem: cleanedOem,
-        raw_oem: rawOem || cleanedOem,
-        pos: String(item["pos"] ?? "—").trim() || "—",
-        name: String(item["name"] ?? "Деталь").trim() || "Деталь",
-      };
-    })
-    .filter((item): item is CatCarPart => item !== null);
+  const parts = Array.isArray(raw["parts"])
+    ? raw["parts"]
+        .map((value): CatCarPart | null => {
+          if (!value || typeof value !== "object") return null;
+          const item = value as Record<string, unknown>;
+          const rawOem = String(item["raw_oem"] ?? "").trim();
+          const cleanedOem = cleanOem(item["cleaned_oem"]) || cleanOem(rawOem);
+          if (!cleanedOem) return null;
+          return {
+            cleaned_oem: cleanedOem,
+            raw_oem: rawOem || cleanedOem,
+            pos: String(item["pos"] ?? "—").trim() || "—",
+            name: String(item["name"] ?? "Деталь").trim() || "Деталь",
+          };
+        })
+        .filter((item): item is CatCarPart => item !== null)
+    : [];
 
   return {
     success: true,
+    page_url: pageUrl,
+    title: typeof raw["title"] === "string" ? raw["title"] : "",
+    items,
     scheme_image: schemeImage,
     parts,
   };
+}
+
+export function fetchCatCarCatalogs(): Promise<CatCarBrowsePayload> {
+  return requestCatalog(new URLSearchParams({ action: "home" }));
+}
+
+export function fetchCatCarPage(
+  targetUrl: string,
+): Promise<CatCarBrowsePayload> {
+  const safeTargetUrl = validateCatCarUrl(targetUrl);
+  return requestCatalog(new URLSearchParams({ action: "page", url: safeTargetUrl }));
 }
