@@ -136,7 +136,8 @@ export function normalizeRemote(
       const model = str(item["model"]);
       const engine = str(item["engine"]);
       const years = str(item["years"] ?? item["year"] ?? [item["yearFrom"], item["yearTo"]].filter(Boolean).join("–"));
-      const catcarUrl = str(item["catcar_url"] ?? item["catcarUrl"] ?? item["epc_url"] ?? item["epcUrl"]);\n      return { id: str(item["id"]) || slug(`${make}-${model}-${engine}-${years}`), make, model, years, engine, ...(catcarUrl ? { catcarUrl } : {}) };
+      const catcarUrl = str(item["catcar_url"] ?? item["catcarUrl"] ?? item["epc_url"] ?? item["epcUrl"]);
+      return { id: str(item["id"]) || slug(`${make}-${model}-${engine}-${years}`), make, model, years, engine, ...(catcarUrl ? { catcarUrl } : {}) };
     })
     .filter((item) => item.make || item.model);
 
