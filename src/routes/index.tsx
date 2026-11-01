@@ -1,6 +1,6 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { lazy, Suspense, useState } from "react";
-import { Camera, Search } from "lucide-react";
+import { Camera, CarFront, Search } from "lucide-react";
 import { sanitizeSku } from "@/lib/parts";
 
 const Scanner = lazy(() => import("@/components/Scanner").then((module) => ({ default: module.Scanner })));
@@ -47,6 +47,10 @@ function Home() {
           </div>
           <button type="submit" disabled={!query} className="mt-3 w-full rounded-xl bg-primary py-3 font-semibold text-primary-foreground disabled:opacity-40">Найти</button>
         </form>
+        <Link to="/catalog" className="mt-4 flex w-full max-w-md items-center justify-center gap-2 rounded-xl border bg-card px-4 py-3 text-sm font-semibold transition-colors hover:bg-muted">
+          <CarFront className="h-4 w-4" />
+          Открыть заводские каталоги автомобилей
+        </Link>
       </div>
       <div className="m-4 flex h-16 items-center justify-center rounded-xl border border-dashed text-xs uppercase tracking-widest text-muted-foreground">Рекламный баннер</div>
       {scanOpen && (
