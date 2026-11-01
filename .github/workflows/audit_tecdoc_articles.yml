@@ -36,7 +36,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python -u tools/audit_tecdoc_articles.py | tee tecdoc-article-audit.log
+          python -u tools/audit_tecdoc_articles.py --snapshot 2Q2018 | tee tecdoc-article-audit.log
 
       - name: Upload audit report
         if: always()
