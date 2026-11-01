@@ -41,13 +41,13 @@ USER_AGENTS = [
 ]
 
 # Toyota OEM numbers are normally 10 digits, optionally with a suffix.
-OEM_RE = re.compile(r"(?<![A-Z0-9])[0-9A-Z]{5,}(?:[\\s.-]+[0-9A-Z]{1,})?(?![A-Z0-9])", re.I)
+OEM_RE = re.compile(r"(?<![A-Z0-9])[0-9A-Z]{5,}(?:[\s.-]+[0-9A-Z]{1,})?(?![A-Z0-9])", re.I)
 INTERNAL_PATHS = ("/toyota/", "/lexus/")
 
 
 def clean_oem(value):
     """Normalize an OEM exactly as required by PartScope SKU sharding."""
-    return re.sub(r"[\\s\\-.]", "", str(value or "")).upper()
+    return re.sub(r"[\s\-.]", "", str(value or "")).upper()
 
 
 def shard_for(oem):
@@ -226,7 +226,7 @@ class CatcarCrawler:
                 crumbs.append(value)
         context = " / ".join(crumbs)
         if not context:
-            context = re.sub(r"\\s*-\\s*Catcar\\.info.*$", "", title).strip()
+            context = re.sub(r"\s*-\s*Catcar\.info.*$", "", title).strip()
         if heading and heading.lower() not in context.lower():
             context = (context + " / " + heading).strip(" /")
         return context or title or url
@@ -281,7 +281,7 @@ class CatcarCrawler:
         candidate = str(value or "").strip()
         if not candidate or len(clean_oem(candidate)) < 5:
             return False
-        return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\\s.\\-/]{3,}", candidate))
+        return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\s.\-/]{3,}", candidate))
 
     def extract_parts(self, soup, page_url, car_context):
         images = self.extract_scheme_images(soup, page_url)
@@ -311,7 +311,7 @@ class CatcarCrawler:
                 oem_index = -1
                 for index, value in enumerate(values):
                     # Avoid treating numeric position codes as OEM numbers.
-                    if self.looks_like_oem(value) and re.search(r"\\d", value):
+                    if self.looks_like_oem(value) and re.search(r"\d", value):
                         compact = clean_oem(value)
                         if len(compact) >= 8 or re.search(r"[-. ]", value):
                             raw_oem, oem_index = value, index
@@ -335,7 +335,7 @@ class CatcarCrawler:
                 ]
                 name = name_candidates[-1] if name_candidates else ""
                 if not name:
-                    name = row.get_text(" ", strip=True).replace(raw_oem, "").strip(" |\\t")
+                    name = row.get_text(" ", strip=True).replace(raw_oem, "").strip(" |\t")
                 scheme = {"img": scheme_image, "pos": pos, "car": car_context}
                 if self.writer.add(raw_oem, name, scheme):
                     extracted += 1
