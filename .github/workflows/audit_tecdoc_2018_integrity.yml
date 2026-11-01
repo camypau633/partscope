@@ -1,0 +1,48 @@
+name: Audit TecDoc 2018 article-table integrity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/audit_tecdoc_2018_integrity.py'
+      - '.github/workflows/audit_tecdoc_2018_integrity.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tecdoc-2018-integrity-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout PartScope
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Audit 2018 article tables
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python -u tools/audit_tecdoc_2018_integrity.py | tee tecdoc-2018-integrity.log
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tecdoc-2018-article-integrity
+          path: |
+            tecdoc-2018-integrity.md
+            tecdoc-2018-integrity.json
+            tecdoc-2018-integrity.log
+          if-no-files-found: warn
+          retention-days: 30
