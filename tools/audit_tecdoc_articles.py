@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Count TecDoc article rows and compare identities across two published snapshots."""
+import argparse
 import csv
 import json
 import os
@@ -50,6 +51,11 @@ def download(repo, path, destination):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--snapshot", choices=list(SOURCES), default="2Q2018")
+    args = parser.parse_args()
+    selected_sources = {args.snapshot: SOURCES[args.snapshot]}
+
     db = sqlite3.connect(WORK / "audit.sqlite")
     db.execute("PRAGMA journal_mode=OFF")
     db.execute("PRAGMA synchronous=OFF")
@@ -60,7 +66,7 @@ def main():
     db.execute("DELETE FROM articles")
     summary = {"sources": {}, "comparison": {}}
 
-    for snapshot, repo in SOURCES.items():
+    for snapshot, repo in selected_sources.items():
         print("Inspecting", snapshot, repo, flush=True)
         tree = get_tree(repo)
         article_paths = sorted(
@@ -184,7 +190,8 @@ def main():
 
     db.execute("CREATE INDEX idx_article_identity ON articles(snapshot, supplier_id, normalized_sku)")
     db.commit()
-    overlap = db.execute("""
+    if len(selected_sources) == 2:
+        overlap = db.execute("""
         SELECT COUNT(*) FROM (
             SELECT supplier_id, normalized_sku FROM articles
             WHERE snapshot='2Q2018' AND supplier_id<>'' AND normalized_sku<>''
