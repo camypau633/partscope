@@ -192,33 +192,31 @@ def main():
     db.commit()
     if len(selected_sources) == 2:
         overlap = db.execute("""
-        SELECT COUNT(*) FROM (
-            SELECT supplier_id, normalized_sku FROM articles
-            WHERE snapshot='2Q2018' AND supplier_id<>'' AND normalized_sku<>''
-            GROUP BY supplier_id, normalized_sku
-            INTERSECT
-            SELECT supplier_id, normalized_sku FROM articles
-            WHERE snapshot='1Q2019' AND supplier_id<>'' AND normalized_sku<>''
-            GROUP BY supplier_id, normalized_sku
-        )
-    """).fetchone()[0]
-    union_count = db.execute("""
-        SELECT COUNT(*) FROM (
-            SELECT supplier_id, normalized_sku
-            FROM articles
-            WHERE supplier_id<>'' AND normalized_sku<>''
-            GROUP BY supplier_id, normalized_sku
-        )
-    """).fetchone()[0]
-    sum_unique = sum(v["unique_supplier_plus_article_number"]
-                     for v in summary["sources"].values())
-    summary["comparison"] = {
-        "same_brand_and_article_in_both_snapshots": overlap,
-        "sum_of_per_snapshot_unique_counts": sum_unique,
-        "combined_unique_brand_article_pairs_across_both": union_count,
-        "overlap_is_not_counted_twice_in_combined_total": True,
-    }
-
+            SELECT COUNT(*) FROM (
+                SELECT supplier_id, normalized_sku FROM articles
+                WHERE snapshot='2Q2018' AND supplier_id<>'' AND normalized_sku<>''
+                GROUP BY supplier_id, normalized_sku
+                INTERSECT
+                SELECT supplier_id, normalized_sku FROM articles
+                WHERE snapshot='1Q2019' AND supplier_id<>'' AND normalized_sku<>''
+                GROUP BY supplier_id, normalized_sku
+            )
+        """).fetchone()[0]
+        union_count = db.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT supplier_id, normalized_sku FROM articles
+                WHERE supplier_id<>'' AND normalized_sku<>''
+                GROUP BY supplier_id, normalized_sku
+            )
+        """).fetchone()[0]
+        sum_unique = sum(v["unique_supplier_plus_article_number"]
+                         for v in summary["sources"].values())
+        summary["comparison"] = {
+            "same_brand_and_article_in_both_snapshots": overlap,
+            "sum_of_per_snapshot_unique_counts": sum_unique,
+            "combined_unique_brand_article_pairs_across_both": union_count,
+            "overlap_is_not_counted_twice_in_combined_total": True,
+        }
     Path("tecdoc-article-audit.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -243,8 +241,9 @@ def main():
             "- CSV parts: {}".format(values["article_file_count"]),
             "",
         ]
-    c = summary["comparison"]
-    lines += [
+    c = summary.get("comparison")
+    if c:
+        lines += [
         "## Across both snapshots",
         "- Matching supplier + article pairs present in both versions: **{:,}**".format(c["same_brand_and_article_in_both_snapshots"]),
         "- Sum of per-version unique counts (double-counts overlap): **{:,}**".format(c["sum_of_per_snapshot_unique_counts"]),
