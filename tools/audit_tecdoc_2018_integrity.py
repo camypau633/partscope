@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -12,6 +13,15 @@ REPO = "tecdocSQL/tecdocdatabase2Q2018"
 API = "https://api.github.com/repos/{}/git/trees/main?recursive=1"
 RAW = "https://raw.githubusercontent.com/{}/main/{}"
 WORK = Path("tecdoc-2018-integrity")
+
+# TecDoc CSV fields can exceed Python's default 128 KiB parser limit.
+_csv_limit = sys.maxsize
+while True:
+    try:
+        csv.field_size_limit(_csv_limit)
+        break
+    except OverflowError:
+        _csv_limit //= 10
 WORK.mkdir(exist_ok=True)
 TABLES = [
     "articles.csv",
