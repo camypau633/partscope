@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { ArrowLeft, CarFront, ChevronRight, Home, Loader2, Search } from "lucide-react";
+import { ArrowLeft, CarFront, ChevronRight, Home, Loader2, Search, Wifi } from "lucide-react";
 import { fetchCatCarCatalogs, fetchCatCarPage, type CatCarBrowsePayload } from "@/lib/catcar";
 
 type HistoryEntry = { url: string | null; title: string };
@@ -20,6 +20,43 @@ function CatCarCatalog() {
   const [currentUrl, setCurrentUrl] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [filter, setFilter] = useState("");
+  const [isDirectTesting, setIsDirectTesting] = useState(false);
+  const [directTest, setDirectTest] = useState<{ kind: "success" | "http-error" | "network-error"; message: string; details: string } | null>(null);
+
+  async function testDirectCatCarAccess() {
+    setIsDirectTesting(true);
+    setDirectTest(null);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch("https://www.catcar.info/", {
+        method: "GET",
+        mode: "cors",
+        credentials: "omit",
+        signal: controller.signal,
+        headers: { Accept: "text/html,application/xhtml+xml" },
+      });
+      const body = await response.text();
+      setDirectTest({
+        kind: response.ok ? "success" : "http-error",
+        message: response.ok
+          ? "Прямой доступ работает: браузер смог прочитать ответ CatCar."
+          : `Браузер получил HTTP ${response.status} ${response.statusText} от CatCar.`,
+        details: `HTTP: ${response.status} ${response.statusText}\nРазмер ответа: ${body.length} символов\nНачало ответа:\n${body.slice(0, 500)}`,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      setDirectTest({
+        kind: "network-error",
+        message: "Браузер не смог прочитать ответ CatCar.",
+        details: `${reason}\n\nЭто может быть ограничение CORS или сетевая ошибка. По одному этому результату нельзя точно отличить их друг от друга.`,
+      });
+    } finally {
+      window.clearTimeout(timeout);
+      setIsDirectTesting(false);
+    }
+  }
+
 
   const query = useQuery<CatCarBrowsePayload>({
     queryKey: ["catcar-browser", currentUrl],
@@ -79,6 +116,29 @@ function CatCarCatalog() {
       </header>
 
       <div className="mx-auto w-full max-w-3xl flex-1 space-y-4 p-4">
+        <section className="rounded-2xl border bg-card p-4">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 text-muted-foreground"><Wifi className="h-5 w-5" /></div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold">Проверка прямого подключения к CatCar</h2>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Тестирует запрос из браузера напрямую к CatCar, без прокси. Каталог и настройки приложения не меняются.
+              </p>
+              <button type="button" onClick={testDirectCatCarAccess} disabled={isDirectTesting}
+                className="mt-3 inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60">
+                {isDirectTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wifi className="h-4 w-4" />}
+                {isDirectTesting ? "Проверяю…" : "Проверить доступ"}
+              </button>
+              {directTest && (
+                <div className={`mt-3 rounded-xl border p-3 text-sm ${directTest.kind === "success" ? "border-green-500/40 bg-green-500/5" : directTest.kind === "http-error" ? "border-amber-500/40 bg-amber-500/5" : "border-destructive/40 bg-destructive/5"}`}>
+                  <p className="font-semibold">{directTest.message}</p>
+                  <pre className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">{directTest.details}</pre>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
         <div className="rounded-2xl border bg-card p-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <CarFront className="h-4 w-4 text-primary" />
