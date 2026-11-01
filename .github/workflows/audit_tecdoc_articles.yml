@@ -1,0 +1,46 @@
+name: Audit TecDoc article counts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tecdoc-article-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout PartScope
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Count article rows and compare snapshots
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python -u tools/audit_tecdoc_articles.py | tee tecdoc-article-audit.log
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tecdoc-article-count-audit
+          path: |
+            tecdoc-article-audit.md
+            tecdoc-article-audit.json
+            tecdoc-article-audit.log
+          if-no-files-found: error
+          retention-days: 30
