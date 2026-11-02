@@ -85,7 +85,7 @@ function Results() {
 
       {candidates.length > 1 && (
         <section className="border-b p-4">
-          <h2 className="mb-2 text-sm font-semibold">Найдено записей: {candidates.length}. Выберите производителя</h2>
+          <h2 className="mb-2 text-sm font-semibold">Найдено записей: {candidates.length}. Выберите запись каталога</h2>
           <ul className="space-y-2">
             {candidates.map((candidate) => (
               <li key={candidate.partId}>
