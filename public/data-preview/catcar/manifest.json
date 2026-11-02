@@ -7,27 +7,27 @@
     {
       "file": "01.json",
       "records": 1,
-      "bytes": 1686
+      "bytes": 1727
     },
     {
       "file": "11.json",
       "records": 2,
-      "bytes": 3346
+      "bytes": 3428
     },
     {
       "file": "12.json",
       "records": 68,
-      "bytes": 115429
+      "bytes": 118217
     },
     {
       "file": "13.json",
       "records": 2,
-      "bytes": 3377
+      "bytes": 3459
     },
     {
       "file": "21.json",
       "records": 1,
-      "bytes": 2396
+      "bytes": 2437
     },
     {
       "file": "90.json",
@@ -37,7 +37,7 @@
     {
       "file": "91.json",
       "records": 1,
-      "bytes": 1677
+      "bytes": 1718
     }
   ],
   "production_enabled": false,
