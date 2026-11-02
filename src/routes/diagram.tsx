@@ -97,6 +97,7 @@ function Diagram() {
                               <div className="text-[11px] uppercase tracking-wider text-orange-300">Позиция {active.id} · OEM</div>
                               <div className="truncate text-sm font-bold">{active.name || "Деталь узла"}</div>
                               <div className="font-mono text-xs text-orange-200">{active.oem}</div>
+                              {active.details && <div className="mt-1 text-[10px] leading-4 text-white/65">{active.details}</div>}
                             </div>
                             <button type="button" aria-label="Закрыть подсказку" onClick={(event) => { event.stopPropagation(); setActive(null); }} className="rounded-full bg-white/10 p-1 hover:bg-white/20">
                               <X size={14} />
