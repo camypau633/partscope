@@ -73,7 +73,7 @@ function emptyRemoteRecord(sku: string): Raw {
  * the exact record from its top-level SKU-keyed object.
  *
  * Example: SKU W712.9 -> clean SKU W7129 -> data/W7.json -> shard["W7129"].
- * No proxy rotation, third-party API, or fallback host is used.
+ * The request reads only the static JSON shard hosted with the application.
  */
 export async function fetchPartShard<T>(sku: string): Promise<T> {
   const cleanSku = cleanPartNumber(sku);
@@ -225,8 +225,8 @@ export function normalizeRemote(
   };
 }
 
-const cacheKey = (sku: string, partId: string) => `part:v9:${sku}:${partId || "legacy"}`;
-const imageKey = (sku: string, partId: string) => `img:v9:${sku}:${partId || "legacy"}`;
+const cacheKey = (sku: string, partId: string) => `part:v10:${sku}:${partId || "legacy"}`;
+const imageKey = (sku: string, partId: string) => `img:v10:${sku}:${partId || "legacy"}`;
 
 async function cacheImage(sku: string, partId: string, url: string) {
   if (!url || url.startsWith("data:") || url.startsWith("/")) return;
