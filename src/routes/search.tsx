@@ -12,7 +12,7 @@ export const Route = createFileRoute("/search")({
       { title: "Результаты поиска — PartScope" },
       { name: "description", content: "Заводские номера, аналоги, применимость и схемы автозапчасти по номеру." },
       { property: "og:title", content: "Результаты поиска — PartScope" },
-      { property: "og:description", content: "Аналоги и применимость автозапчасти по номеру." },
+      { property: "og:description", content: "Заводские детали, аналоги, применимость и схемы автозапчасти по номеру." },
     ],
   }),
   ssr: false,
@@ -146,7 +146,7 @@ function Results() {
           <ul className="divide-y">
             {selected.applicability.map((vehicle) => (
               <li key={vehicle.id}>
-                <Link to="/diagram" search={{ part, partId: selected.partId, car: vehicle.id, catcarUrl: vehicle.catcarUrl ?? "" }} className="flex items-center gap-3 px-4 py-3 hover:bg-muted">
+                <Link to="/diagram" search={{ part, partId: selected.partId, car: vehicle.id }} className="flex items-center gap-3 px-4 py-3 hover:bg-muted">
                   <div className="min-w-0 flex-1">
                     <div className="font-semibold">{vehicle.make} {vehicle.model}</div>
                     <div className="text-xs text-muted-foreground">{[vehicle.engine, vehicle.years].filter(Boolean).join(" · ")}</div>
