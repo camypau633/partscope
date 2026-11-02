@@ -30,6 +30,7 @@ export type PartData = {
   name: string;
   brand: string;
   analogues: Analogue[];
+  factoryParts: FactoryPart[];
   applicability: Vehicle[];
   diagram: { imageUrl: string; width: number; height: number; hotspots: Hotspot[] };
   specs: Spec[];
@@ -215,6 +216,7 @@ export function normalizeRemote(
     name: str(raw["name"] ?? raw["partName"]),
     brand: str(raw["brand"] ?? raw["manufacturer"]),
     analogues,
+    factoryParts,
     applicability,
     specs,
     technicalDrawings,
