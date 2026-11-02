@@ -10,7 +10,7 @@ export const Route = createFileRoute("/search")({
   head: () => ({
     meta: [
       { title: "Результаты поиска — PartScope" },
-      { name: "description", content: "Аналоги и применимость автозапчасти по номеру." },
+      { name: "description", content: "Заводские номера, аналоги, применимость и схемы автозапчасти по номеру." },
       { property: "og:title", content: "Результаты поиска — PartScope" },
       { property: "og:description", content: "Аналоги и применимость автозапчасти по номеру." },
     ],
@@ -21,7 +21,7 @@ export const Route = createFileRoute("/search")({
 
 function Results() {
   const { part, partId } = Route.useSearch();
-  const [tab, setTab] = useState<"analogues" | "apps" | "drawings">("analogues");
+  const [tab, setTab] = useState<"factory" | "analogues" | "apps" | "drawings">("factory");
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["parts", part],
     queryFn: () => getParts(part),
@@ -48,14 +48,16 @@ function Results() {
             </span>
           )}
         </div>
-        <div className="mt-3 grid grid-cols-3">
+        <div className="mt-3 grid grid-cols-4">
           {([
-            ["analogues", "Кросс-ссылки"],
+            ["factory", "Заводские детали"],
+            ["analogues", "Аналоги"],
             ["apps", "Применимость"],
             ["drawings", "Чертежи и размеры"],
           ] as const).map(([key, label]) => (
             <button key={key} onClick={() => setTab(key)} className={`border-b-2 px-1 py-3 text-xs font-medium sm:text-sm ${tab === key ? "border-primary text-foreground" : "border-transparent text-muted-foreground"}`}>
               {label}
+              {selected && key === "factory" && <span className="text-muted-foreground"> ({selected.factoryParts.length})</span>}
               {selected && key === "analogues" && <span className="text-muted-foreground"> ({selected.analogues.length})</span>}
               {selected && key === "apps" && <span className="text-muted-foreground"> ({selected.applicability.length})</span>}
               {selected && key === "drawings" && <span className="text-muted-foreground"> ({selected.technicalDrawings.length + selected.specs.length})</span>}
@@ -97,6 +99,32 @@ function Results() {
         </section>
       )}
 
+      {selected && tab === "factory" && (
+        selected.factoryParts.length ? (
+          <section className="divide-y">
+            {selected.factoryParts.map((item, index) => (
+              <article key={item.sku + ":" + item.position + ":" + index} className="space-y-1 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-mono font-semibold">{item.sku}</div>
+                    <div className="text-sm">{item.name || "Наименование не указано"}</div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      {item.position && <span>Позиция: {item.position}</span>}
+                      {item.quantity && <span>Количество: {item.quantity}</span>}
+                      {item.productionPeriod && <span>Период: {item.productionPeriod}</span>}
+                    </div>
+                    {item.applicability && <div className="text-xs text-muted-foreground">{item.applicability}</div>}
+                    {item.sourceName && <div className="text-[11px] text-muted-foreground">Источник: {item.sourceName}</div>}
+                    {item.sourceUrl && <a href={item.sourceUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">Открыть запись источника</a>}
+                  </div>
+                  <Link to="/search" search={{ part: item.sku, partId: "" }} className="shrink-0 rounded-lg border px-3 py-2 text-xs font-semibold">Найти</Link>
+                </div>
+              </article>
+            ))}
+          </section>
+        ) : <p className="p-8 text-center text-sm text-muted-foreground">Заводские номера и позиции пока не загружены для этой детали.</p>
+      )}
+
       {selected && tab === "analogues" && (
         selected.analogues.length ? (
           <ul className="divide-y">
@@ -110,7 +138,7 @@ function Results() {
               </li>
             ))}
           </ul>
-        ) : <p className="p-8 text-center text-sm text-muted-foreground">В TecDoc нет подтверждённых перекрёстных ссылок для этой записи.</p>
+        ) : <p className="p-8 text-center text-sm text-muted-foreground">В подключённых источниках пока нет подтверждённых аналогов для этой детали.</p>
       )}
 
       {selected && tab === "apps" && (
