@@ -1,0 +1,51 @@
+{
+  "exporter": "partscope-catcar-japanese-v1",
+  "documents_read": 2,
+  "records_exported": 77,
+  "shards": [
+    {
+      "file": "01.json",
+      "records": 1,
+      "bytes": 1686
+    },
+    {
+      "file": "11.json",
+      "records": 2,
+      "bytes": 3346
+    },
+    {
+      "file": "12.json",
+      "records": 68,
+      "bytes": 115429
+    },
+    {
+      "file": "13.json",
+      "records": 2,
+      "bytes": 3377
+    },
+    {
+      "file": "21.json",
+      "records": 1,
+      "bytes": 2396
+    },
+    {
+      "file": "90.json",
+      "records": 2,
+      "bytes": 5086
+    },
+    {
+      "file": "91.json",
+      "records": 1,
+      "bytes": 1677
+    }
+  ],
+  "analogs_exported": 0,
+  "physical_dimensions_exported": 0,
+  "hotspots_exported": 0,
+  "notes": [
+    "Factory catalogue rows are stored only in factory_parts.",
+    "No analogues or physical dimensions are inferred.",
+    "Hotspots are omitted until source coordinates are calibrated to image coordinates.",
+    "Production export is restricted to Toyota and Nissan."
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "status": "preview-only",
+  "source_repository": "camypau633/parts-japanese",
+  "source_workflow": "CatCar real artifact regression",
+  "records_exported": 77,
+  "shards": [
+    {
+      "file": "01.json",
+      "records": 1,
+      "bytes": 1686
+    },
+    {
+      "file": "11.json",
+      "records": 2,
+      "bytes": 3346
+    },
+    {
+      "file": "12.json",
+      "records": 68,
+      "bytes": 115429
+    },
+    {
+      "file": "13.json",
+      "records": 2,
+      "bytes": 3377
+    },
+    {
+      "file": "21.json",
+      "records": 1,
+      "bytes": 2396
+    },
+    {
+      "file": "90.json",
+      "records": 2,
+      "bytes": 5086
+    },
+    {
+      "file": "91.json",
+      "records": 1,
+      "bytes": 1677
+    }
+  ],
+  "production_enabled": false,
+  "note": "Preview data only. PartScope search does not read this directory."
+}
