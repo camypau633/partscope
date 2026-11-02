@@ -1,7 +1,17 @@
 import { get, set } from "idb-keyval";
 
 export type Analogue = { partId?: string; brand: string; sku: string; name: string };
-export type Vehicle = { id: string; make: string; model: string; years: string; engine: string; catcarUrl?: string };
+export type Vehicle = { id: string; make: string; model: string; years: string; engine: string };
+export type FactoryPart = {
+  sku: string;
+  name: string;
+  position?: string;
+  quantity?: string;
+  productionPeriod?: string;
+  applicability?: string;
+  sourceName?: string;
+  sourceUrl?: string;
+};
 export type Spec = { key: string; label: string; value: string | number; unit?: string };
 export type Hotspot = {
   id: string;
@@ -64,7 +74,7 @@ function emptyRemoteRecord(sku: string): Raw {
  * Example: SKU W712.9 -> clean SKU W7129 -> data/W7.json -> shard["W7129"].
  * No proxy rotation, third-party API, or fallback host is used.
  */
-export async function fetchWithProxyRotation<T>(sku: string): Promise<T> {
+export async function fetchPartShard<T>(sku: string): Promise<T> {
   const cleanSku = cleanPartNumber(sku);
   if (!cleanSku) return emptyRemoteRecord("") as T;
 
@@ -140,6 +150,19 @@ export function normalizeRemote(
       return { id: str(item["id"]) || slug(`${make}-${model}-${engine}-${years}`), make, model, years, engine, ...(catcarUrl ? { catcarUrl } : {}) };
     })
     .filter((item) => item.make || item.model);
+
+  const factoryParts: FactoryPart[] = arr(raw["factory_parts"] ?? raw["factoryParts"] ?? raw["oem_records"] ?? raw["oemRecords"])
+    .map((item) => ({
+      sku: str(item["sku"] ?? item["oem"] ?? item["part_number"] ?? item["partNumber"]),
+      name: str(item["name"] ?? item["description"]),
+      position: str(item["position"] ?? item["pos"] ?? item["reference"]),
+      quantity: str(item["quantity"] ?? item["qty"]),
+      productionPeriod: str(item["production_period"] ?? item["productionPeriod"] ?? item["period"]),
+      applicability: str(item["applicability"] ?? item["vehicle"]),
+      sourceName: str(item["source_name"] ?? item["sourceName"]),
+      sourceUrl: str(item["source_url"] ?? item["sourceUrl"]),
+    }))
+    .filter((item) => item.sku);
 
   const diagram = (raw["diagram"] && typeof raw["diagram"] === "object" ? raw["diagram"] : {}) as Raw;
   const rawSpecs = diagram["specifications"] ?? raw["specifications"] ?? raw["specs"];
@@ -237,7 +260,7 @@ function measure(url: string): Promise<{ width: number; height: number }> {
 export async function getParts(rawSku: string): Promise<Array<PartData & { fromCache: boolean }>> {
   const sku = sanitizeSku(rawSku);
   if (!sku) throw new Error("Enter a part number first.");
-  const rawResult = await fetchWithProxyRotation<Raw | Raw[]>(sku);
+  const rawResult = await fetchPartShard<Raw | Raw[]>(sku);
   const records = Array.isArray(rawResult) ? rawResult : [rawResult];
   const output: Array<PartData & { fromCache: boolean }> = [];
   for (const raw of records) {
@@ -252,7 +275,7 @@ export async function getParts(rawSku: string): Promise<Array<PartData & { fromC
     const { diagramUrl, hotspots, ...rest } = normalizeRemote(sku, raw);
     const size = await measure(diagramUrl);
     const data: PartData = { ...rest, diagram: { imageUrl: diagramUrl, ...size, hotspots } };
-    const hasRealData = Boolean(data.name || data.brand || data.analogues.length ||
+    const hasRealData = Boolean(data.name || data.brand || data.analogues.length || data.factoryParts.length ||
       data.applicability.length || data.specs.length || data.diagram.imageUrl || data.diagram.hotspots.length);
     if (hasRealData) {
       await set(cacheKey(sku, partId), data).catch(() => {});
