@@ -1,51 +1,134 @@
 {
   "exporter": "partscope-catcar-japanese-v1",
-  "documents_read": 2,
-  "records_exported": 77,
+  "documents_read": 10,
+  "records_exported": 264,
+  "unique_skus_exported": 260,
+  "validation": {
+    "records_validated": 264,
+    "factory_parts_validated": 403,
+    "records_by_brand": {
+      "Nissan": 75,
+      "Toyota": 189
+    },
+    "records_with_compatibility_years": 264,
+    "records_with_engine": 189,
+    "records_with_diagram_url": 264,
+    "records_with_hotspots": 264,
+    "hotspots_validated": 407,
+    "validation_passed": true
+  },
   "shards": [
     {
       "file": "01.json",
+      "sku_keys": 1,
       "records": 1,
-      "bytes": 1727
+      "bytes": 1861
+    },
+    {
+      "file": "04.json",
+      "sku_keys": 16,
+      "records": 16,
+      "bytes": 50915
+    },
+    {
+      "file": "09.json",
+      "sku_keys": 7,
+      "records": 7,
+      "bytes": 22203
     },
     {
       "file": "11.json",
-      "records": 2,
-      "bytes": 3428
+      "sku_keys": 54,
+      "records": 55,
+      "bytes": 162326
     },
     {
       "file": "12.json",
-      "records": 68,
-      "bytes": 118217
+      "sku_keys": 84,
+      "records": 84,
+      "bytes": 197292
     },
     {
       "file": "13.json",
+      "sku_keys": 2,
       "records": 2,
-      "bytes": 3459
+      "bytes": 3726
+    },
+    {
+      "file": "15.json",
+      "sku_keys": 5,
+      "records": 5,
+      "bytes": 15687
+    },
+    {
+      "file": "19.json",
+      "sku_keys": 4,
+      "records": 4,
+      "bytes": 12279
     },
     {
       "file": "21.json",
+      "sku_keys": 1,
       "records": 1,
-      "bytes": 2437
+      "bytes": 2598
+    },
+    {
+      "file": "51.json",
+      "sku_keys": 1,
+      "records": 1,
+      "bytes": 3371
+    },
+    {
+      "file": "82.json",
+      "sku_keys": 1,
+      "records": 1,
+      "bytes": 1948
     },
     {
       "file": "90.json",
-      "records": 2,
-      "bytes": 5086
+      "sku_keys": 64,
+      "records": 64,
+      "bytes": 171575
     },
     {
       "file": "91.json",
+      "sku_keys": 11,
+      "records": 13,
+      "bytes": 25149
+    },
+    {
+      "file": "94.json",
+      "sku_keys": 1,
+      "records": 2,
+      "bytes": 3857
+    },
+    {
+      "file": "96.json",
+      "sku_keys": 3,
+      "records": 3,
+      "bytes": 11302
+    },
+    {
+      "file": "99.json",
+      "sku_keys": 4,
+      "records": 4,
+      "bytes": 13810
+    },
+    {
+      "file": "G1.json",
+      "sku_keys": 1,
       "records": 1,
-      "bytes": 1718
+      "bytes": 1922
     }
   ],
   "analogs_exported": 0,
   "physical_dimensions_exported": 0,
-  "hotspots_exported": 0,
+  "hotspots_exported": 407,
   "notes": [
     "Factory catalogue rows are stored only in factory_parts.",
     "No analogues or physical dimensions are inferred.",
-    "Hotspots are omitted until source coordinates are calibrated to image coordinates.",
+    "Toyota hotspots use source rectangle centres in natural image pixels after bounded image and resize-script verification.",
+    "Multiple catalog-group records for one SKU remain separate PartScope candidates.",
     "Production export is restricted to Toyota and Nissan."
   ]
 }
